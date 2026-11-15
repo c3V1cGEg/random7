@@ -45,6 +45,28 @@ export const postLayout = (positions: Record<string, XY>) => post(`${base}/layou
 
 export const createSession = (name: string, type: "flowchart" | "sequence" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
 
+/** Download URL of a session's export file (the same JSON the server keeps on disk). */
+export const exportUrl = (name: string) => `/api/s/${encodeURIComponent(name)}/export`;
+
+export class SessionExistsError extends Error {
+  constructor(readonly name: string) {
+    super(`session "${name}" already exists`);
+  }
+}
+
+/** Imports an exported session file as a new session, under `name` or the name stored in the file. */
+export async function importSession(fileText: string, name?: string): Promise<SessionSummary> {
+  const res = await fetch(`/api/sessions/import${name ? `?name=${encodeURIComponent(name)}` : ""}`, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: fileText,
+  });
+  const json = await res.json();
+  if (json.error === "session_exists") throw new SessionExistsError(json.name);
+  if (!res.ok) throw new Error(json.message ?? `HTTP ${res.status}`);
+  return json;
+}
+
 export async function deleteSession(name: string): Promise<void> {
   const res = await fetch(`/api/s/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!res.ok) throw new Error((await res.json()).message);

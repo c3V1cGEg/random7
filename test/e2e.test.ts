@@ -269,6 +269,42 @@ test("browser can delete a session but not the default one", async () => {
   assert.equal(delDefault.status, 400);
 });
 
+test("a session exports to a file and imports back as a new session", async () => {
+  const snap = await call("canvas_get_snapshot");
+  await call("canvas_apply_patch", {
+    expectedRevision: snap.data.revision,
+    operations: [{ op: "add_node", id: "exp", label: "Exported step" }],
+  });
+  const exported = await fetch(`${BASE}/api/s/default/export`);
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers.get("content-disposition") ?? "", /default\.canvas\.json/);
+  const file = await exported.text();
+
+  const importAs = (body: string, name?: string) =>
+    fetch(`${BASE}/api/sessions/import${name ? `?name=${name}` : ""}`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", origin: BASE },
+      body,
+    });
+  const taken = await importAs(file);
+  assert.equal(taken.status, 409);
+  assert.deepEqual(await taken.json(), { error: "session_exists", message: 'session "default" already exists', name: "default" });
+
+  const imported = await importAs(file, "restored");
+  assert.equal(imported.status, 200);
+  assert.equal((await imported.json()).name, "restored");
+  const copy = await call("canvas_get_snapshot", { session: "restored" });
+  assert.match(copy.data.diagram, /Exported step/);
+  assert.notEqual(copy.data.sessionId, (await call("canvas_get_snapshot")).data.sessionId, "an import gets its own session id");
+  await waitFor(() => readdirSync(DATA_DIR).includes("restored.json"));
+
+  for (const bad of ["not json", "{}", JSON.stringify({ version: 1, name: "broken", model: {} })]) {
+    const res = await importAs(bad, "broken");
+    assert.equal(res.status, 400, bad);
+    assert.equal((await res.json()).error, "invalid_session_file");
+  }
+});
+
 async function waitFor(pred: () => boolean, ms = 2000) {
   const start = Date.now();
   while (!pred()) {

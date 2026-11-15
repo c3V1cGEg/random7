@@ -2,6 +2,7 @@
 // (diagram, marks, revisions, undo, layout); sessions are saved to disk when a data
 // directory is configured, so they survive server restarts.
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CanvasStore, type SessionSummary, type StoredSession } from "./store.ts";
@@ -72,6 +73,27 @@ export class SessionManager {
     const n = normalizeSessionName(name);
     if (this.stores.has(n)) throw new CanvasError("session_exists", `session "${n}" already exists`);
     const store = new CanvasStore(n, title?.trim().slice(0, 120) || undefined, type);
+    this.register(store);
+    this.scheduleSave(store);
+    this.events?.listChanged();
+    return store;
+  }
+
+  /**
+   * Adds a session from an exported session file, under `name` or the name stored in the file.
+   * It gets a fresh session id, so agents that knew an earlier session of that name re-read it.
+   */
+  import(data: unknown, name?: string): CanvasStore {
+    const stored = data as StoredSession;
+    if (typeof stored?.name !== "string") throw new CanvasError("invalid_session_file", "not a canvas session file");
+    const n = normalizeSessionName(name ?? stored.name);
+    if (this.stores.has(n)) throw new CanvasError("session_exists", `session "${n}" already exists`, { name: n });
+    let store: CanvasStore;
+    try {
+      store = CanvasStore.fromStored({ ...stored, name: n, sessionId: randomUUID() });
+    } catch (err) {
+      throw new CanvasError("invalid_session_file", `cannot import session file: ${(err as Error).message}`);
+    }
     this.register(store);
     this.scheduleSave(store);
     this.events?.listChanged();

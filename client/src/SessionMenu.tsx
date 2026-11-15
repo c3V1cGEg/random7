@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { SESSION, createSession, deleteSession, sessionUrl, type SessionSummary } from "./api.ts";
+import {
+  SESSION,
+  SessionExistsError,
+  createSession,
+  deleteSession,
+  exportUrl,
+  importSession,
+  sessionUrl,
+  type SessionSummary,
+} from "./api.ts";
 
 const ago = (iso: string) => {
   const secs = Math.round((Date.now() - Date.parse(iso)) / 1000);
@@ -25,6 +34,7 @@ export function SessionMenu({
   const [name, setName] = useState("");
   const [type, setType] = useState<"flowchart" | "sequence">("flowchart");
   const ref = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -47,6 +57,24 @@ export function SessionMenu({
       location.href = sessionUrl(n);
     } catch (err) {
       onError((err as Error).message);
+    }
+  };
+
+  /** Imports a session file; if its name is taken, asks for another one until it fits or the user gives up. */
+  const importFile = async (file: File) => {
+    const text = await file.text();
+    let name: string | undefined;
+    for (;;) {
+      try {
+        const created = await importSession(text, name);
+        location.href = sessionUrl(created.name);
+        return;
+      } catch (err) {
+        if (!(err instanceof SessionExistsError)) return onError((err as Error).message);
+        const next = prompt(`A session named "${err.name}" already exists. Import it as:`, `${err.name}-imported`);
+        if (!next?.trim()) return;
+        name = next.trim().toLowerCase().replace(/\s+/g, "-");
+      }
     }
   };
 
@@ -111,6 +139,25 @@ export function SessionMenu({
                 Delete session
               </button>
             )}
+          </div>
+          <div className="session-actions">
+            <a className="button" href={exportUrl(SESSION)} download title="Download this canvas as a file you can import later">
+              Export this canvas
+            </a>
+            <button onClick={() => fileInput.current?.click()} title="Add a canvas from an exported file as a new session">
+              Import from file…
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void importFile(file);
+              }}
+            />
           </div>
           <p className="muted">
             Agents pick a session by name: tell them e.g. <code>use canvas session “{SESSION}”</code>.

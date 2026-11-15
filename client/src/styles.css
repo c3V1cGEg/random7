@@ -327,8 +327,9 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .session-new .primary { flex: none; margin: 0; width: auto; padding: 4px 12px; }
 .session-new .primary:disabled { opacity: 0.5; cursor: default; }
 .session-actions { display: flex; gap: 6px; margin-top: 8px; }
-.session-actions button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px; font-size: 12px; }
-.session-actions button:hover { border-color: var(--accent); }
+.session-actions button, .session-actions .button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px; font-size: 12px; }
+.session-actions .button { color: inherit; text-align: center; text-decoration: none; font-family: inherit; }
+.session-actions button:hover, .session-actions .button:hover { border-color: var(--accent); }
 .session-actions button.danger:hover { border-color: var(--k-incorrect); color: var(--k-incorrect); }
 .session-panel > .muted { margin: 8px 2px 0; }
 .agents { display: inline-flex; gap: 4px; min-width: 0; overflow: hidden; }

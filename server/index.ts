@@ -150,7 +150,7 @@ app.delete("/mcp", mcpSessionRequest);
 
 function sendError(res: Response, err: unknown) {
   if (err instanceof CanvasError) {
-    const status = err.code.endsWith("conflict") ? 409 : err.code === "session_not_found" ? 404 : 400;
+    const status = err.code.endsWith("conflict") || err.code === "session_exists" ? 409 : err.code === "session_not_found" ? 404 : 400;
     res.status(status).json(err.toJSON());
   } else {
     console.error(err);
@@ -195,6 +195,27 @@ app.post("/api/sessions", (req, res) => {
     sendError(res, err);
   }
 });
+
+// Session files travel as text: they can outgrow the 100 kB limit of the global JSON parser.
+app.post("/api/sessions/import", express.text({ type: "*/*", limit: "20mb" }), (req, res) => {
+  try {
+    let data: unknown;
+    try {
+      data = JSON.parse(String(req.body ?? ""));
+    } catch {
+      throw new CanvasError("invalid_session_file", "the file is not valid JSON");
+    }
+    const name = typeof req.query.name === "string" && req.query.name ? req.query.name : undefined;
+    res.json(sessions.import(data, name).summary());
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get("/api/s/:session/export", withSession((store, _req, res) => {
+  res.attachment(`${store.name}.canvas.json`).type("application/json").send(JSON.stringify(store.toStored(), null, 1));
+  return undefined;
+}));
 
 app.delete("/api/s/:session", (req, res) => {
   try {

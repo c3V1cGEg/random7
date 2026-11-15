@@ -28,6 +28,9 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
   layout) and reloaded on start. `CANVAS_DATA_DIR=/path` moves the folder; `CANVAS_PERSIST=0` keeps
   everything in memory. Undo history and the change log are not saved; after a restart, agents
   asking for changes are told to re-read the snapshot.
+- **Export / import:** the session menu's **Export this canvas** downloads `<name>.canvas.json` (the
+  same format as the saved file), and **Import from file…** adds such a file as a new session. If its
+  name is taken, you are asked for another one; an existing session is never overwritten.
 - **Layout** (node positions) belongs to the session: it is shared live between browsers and saved,
   but never sent to agents.
 
@@ -74,7 +77,8 @@ Later: *"Look at mark #2 and revise that branch."*
 All tools except the last two take an optional `session` (default `default`).
 
 The browser uses `/api/sessions`, `/api/s/<session>/{state,patch,layout,undo,redo,reset}` (patch takes
-the same operations plus an optional `undoGroup`), `DELETE /api/s/<session>`, and the
+the same operations plus an optional `undoGroup`), `DELETE /api/s/<session>`, `GET /api/s/<session>/export`,
+`POST /api/sessions/import[?name=<new name>]` (body: the exported file), and the
 `/ws?session=<name>` push channel.
 
 Supported Mermaid: `flowchart TD|LR`, `id["action"]`, `id{"decision"}`, `id(["start/end"])`,
