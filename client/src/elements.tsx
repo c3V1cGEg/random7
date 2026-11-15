@@ -251,15 +251,27 @@ export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected 
   // Unresized nodes keep their shape's default size from CSS.
   const sized = live || data.w ? { width: "100%", minHeight: live?.height ?? data.minHeight } : undefined;
   // Text inside a diamond only fits if the diamond is ~2.3x the text height (with 22% side padding);
-  // a wider diamond wraps into fewer lines, so it also gets shorter.
+  // a wider diamond wraps into fewer lines, so it also gets shorter. Unresized diamonds widen until they
+  // are no taller than 0.8x their width (up to 360px) instead of stretching into a tall spike.
   const ref = useRef<HTMLDivElement>(null);
-  const [diamondHeight, setDiamondHeight] = useState<number>();
+  const [diamond, setDiamond] = useState<{ width?: number; height: number }>();
   useLayoutEffect(() => {
-    if (data.shape !== "decision") return;
-    const text = ref.current?.querySelector<HTMLElement>(":scope > .label");
-    if (text) setDiamondHeight(Math.max(100, Math.ceil(text.offsetHeight / 0.44) + 6));
+    const el = ref.current;
+    const text = el?.querySelector<HTMLElement>(":scope > .label");
+    if (data.shape !== "decision" || !el || !text) return;
+    const heightFor = () => Math.max(100, Math.ceil(text.offsetHeight / 0.44) + 6);
+    if (live || data.w) return setDiamond({ height: heightFor() });
+    let width = 170;
+    for (; ; width += 30) {
+      el.style.width = `${width}px`;
+      if (heightFor() <= width * 0.8 || width >= 360) break;
+    }
+    setDiamond({ width, height: heightFor() });
   }, [data.shape, data.label, data.w, live]);
-  const style = data.shape === "decision" ? { ...sized, minHeight: Math.max(diamondHeight ?? 100, (sized?.minHeight as number) ?? 0) } : sized;
+  const style =
+    data.shape === "decision"
+      ? { width: diamond?.width, ...sized, minHeight: Math.max(diamond?.height ?? 100, (sized?.minHeight as number) ?? 0) }
+      : sized;
   return (
     <>
     <NodeResizer
