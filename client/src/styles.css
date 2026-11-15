@@ -185,7 +185,10 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .node .details li.detail-dropped::before { content: "−"; color: var(--s-removed); }
 .detail-modified { color: #92400e; }
 .node .details li.detail-modified::before { content: "~"; color: var(--s-changed); }
+.node-decision.has-details { align-items: center; }
 .node-decision.has-details .label { text-align: center; }
+.node-decision .details li { padding-left: 0; }
+.node-decision .details li::before { position: static; display: inline-block; width: auto; margin-right: 4px; }
 .label-edit {
   position: relative; width: 100%; font-size: 13px; line-height: 1.3; text-align: center; border: 0;
   outline: 2px solid var(--accent); border-radius: 4px; resize: none; padding: 2px; background: #fff;
