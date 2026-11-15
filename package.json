@@ -1,0 +1,36 @@
+{
+  "name": "visual-agent-canvas",
+  "version": "1.0.0",
+  "description": "Shared live canvas for discussing business logic with an MCP coding agent",
+  "scripts": {
+    "build": "vite build --configLoader native",
+    "start": "vite build --configLoader native && tsx server/index.ts",
+    "serve": "tsx server/index.ts",
+    "dev": "vite build --configLoader native --watch & tsx watch server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "@dagrejs/dagre": "^1.1.8",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "express": "^5.3.0",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.3.0",
+    "@xyflow/react": "^12.12.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "private": true
+}

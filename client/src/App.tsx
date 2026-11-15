@@ -1,0 +1,1332 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  Background,
+  Controls,
+  MarkerType,
+  MiniMap,
+  ReactFlow,
+  ReactFlowProvider,
+  SelectionMode,
+  ViewportPortal,
+  applyEdgeChanges,
+  applyNodeChanges,
+  useReactFlow,
+  type Connection,
+  type EdgeChange,
+  type NodeChange,
+  type OnBeforeDelete,
+  type OnConnectEnd,
+} from "@xyflow/react";
+import type { Annotation, AnnotationKind, ChangeStatus, NodeShape } from "../../server/types.ts";
+import {
+  ConflictError,
+  connectSocket,
+  describeAgentTool,
+  describeOp,
+  opTarget,
+  SESSION,
+  canvasRef,
+  sessionUrl,
+  postHistory,
+  postLayout,
+  postPatch,
+  postReset,
+  type AgentInfo,
+  type SessionSummary,
+  type BrowserState,
+  type ChangeEvent,
+  type Operation,
+  type OpTarget,
+  type PatchResponse,
+} from "./api.ts";
+import { ActionsContext, edgeTypes, nodeTypes, type CanvasActions, type CanvasEdge, type CanvasNode, type TypeAhead } from "./elements.tsx";
+import { KIND_META } from "./kinds.ts";
+import { DEFAULT_SIZE, dagreLayout, placeMissing, type Size, type XY } from "./layout.ts";
+import { ChangeLegend } from "./Legend.tsx";
+import { OverflowTip } from "./OverflowTip.tsx";
+import { walkItems } from "../../server/sequence.ts";
+import { SequenceBar } from "./SequenceBar.tsx";
+import { FrozenLanes, sequenceNodeTypes } from "./sequenceElements.tsx";
+import type { SequenceLayout } from "./sequenceLayout.ts";
+import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
+import { useSequence } from "./useSequence.ts";
+import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
+import { SessionMenu } from "./SessionMenu.tsx";
+import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
+
+const TOUCH_HIGHLIGHT_MS = 4000;
+/** Arrowhead colours for edge statuses (SVG markers can't use the CSS variables). */
+const STATUS_COLOR: Record<ChangeStatus, string> = { new: "#16a34a", changed: "#d97706", removed: "#dc2626" };
+const FIT = { padding: 0.25, duration: 300, maxZoom: 1.2 } as const;
+const DEFAULT_LABEL: Record<NodeShape, string> = { action: "New step", decision: "Condition?", terminal: "Start", store: "Database" };
+
+/**
+ * The browser's history interleaves semantic steps (undone on the server, which checks that
+ * the agent hasn't changed the same things since) with layout-only steps (undone locally).
+ */
+type HistoryStep = { kind: "semantic"; group?: string } | { kind: "layout"; before: Record<string, XY>; after: Record<string, XY> };
+
+const allNodeTypes = { ...nodeTypes, ...sequenceNodeTypes };
+
+const isTypingTarget = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+
+/** Applies a stored placement (position, and the size the user gave the node, if any) to a React Flow node. */
+const place = (n: CanvasNode, p: XY | undefined): CanvasNode =>
+  p ? { ...n, position: { x: p.x, y: p.y }, width: p.w, height: undefined, data: { ...n.data, w: p.w, minHeight: p.h } } : n;
+
+const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a, gap = 20) =>
+  a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
+
+export default function App() {
+  return (
+    <ReactFlowProvider>
+      <Canvas />
+    </ReactFlowProvider>
+  );
+}
+
+function Canvas() {
+  const rf = useReactFlow<CanvasNode, CanvasEdge>();
+  const [state, setState] = useState<BrowserState | null>(null);
+  const stateRef = useRef<BrowserState | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [nodes, setNodes] = useState<CanvasNode[]>([]);
+  const [edges, setEdges] = useState<CanvasEdge[]>([]);
+  /** Node positions; mirrors the session's shared layout (incl. deleted nodes, so undo restores them in place). */
+  const positions = useRef<Record<string, XY>>({});
+  /** Local positions not yet confirmed by the server, protected from stale server echoes. */
+  const unsentLayout = useRef<Record<string, XY>>({});
+  const dragging = useRef(new Set<string>());
+  const sizes = useRef<Record<string, Size>>({});
+  /** One-shot selection to apply on the next rebuild (for elements that arrive with the next server state). */
+  const pendingSelect = useRef<Set<string> | null>(null);
+  /** Undo groups waiting for a follow-up edit, keyed "node:<id>" / "mark:<id>" (e.g. naming a just-created node). */
+  const pendingGroups = useRef(new Map<string, string>());
+  const undoSteps = useRef<HistoryStep[]>([]);
+  const redoSteps = useRef<HistoryStep[]>([]);
+  const [, setHistoryVersion] = useState(0);
+  const dragStart = useRef<Record<string, XY>>({});
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const revisionWaiters = useRef<Array<() => void>>([]);
+  /** Buffers keystrokes between "create node" and its editor gaining focus, so fast typists lose nothing. */
+  const typeAhead = useRef<TypeAhead | null>(null);
+  /** Last computed sequence timeline (sequence sessions only). */
+  const seqLayout = useRef<SequenceLayout | null>(null);
+
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activeMark, setActiveMark] = useState<number | null>(null);
+  const [hoverMark, setHoverMark] = useState<number | null>(null);
+  const [noteFocus, setNoteFocus] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [sessionList, setSessionList] = useState<SessionSummary[]>([]);
+  const [missingSession, setMissingSession] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  /** Sequence diagrams: keep lane names visible at the left edge while scrolling (remembered per browser). */
+  const [freezeLanes, setFreezeLanes] = useState(() => {
+    try {
+      return localStorage.getItem("vc.freezeLanes") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const toggleFreezeLanes = useCallback(() => {
+    setFreezeLanes((on) => {
+      try {
+        localStorage.setItem("vc.freezeLanes", on ? "0" : "1");
+      } catch {
+        // storage unavailable: the choice lasts for this page only
+      }
+      return !on;
+    });
+  }, []);
+
+  const sizeOf = useCallback((n: { id: string; shape: NodeShape }) => sizes.current[n.id] ?? DEFAULT_SIZE[n.shape], []);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast((t) => (t === msg ? null : t)), 3500);
+  }, []);
+
+  // --- layout ------------------------------------------------------------------
+
+  const fit = useCallback((ids?: string[]) => {
+    rf.fitView(ids?.length ? { ...FIT, nodes: ids.map((id) => ({ id })) } : FIT);
+  }, [rf]);
+
+  const pushStep = useCallback((step: HistoryStep) => {
+    const top = undoSteps.current.at(-1);
+    redoSteps.current = [];
+    if (!(step.kind === "semantic" && step.group && top?.kind === "semantic" && top.group === step.group)) {
+      undoSteps.current.push(step);
+      if (undoSteps.current.length > 100) undoSteps.current.shift();
+    }
+    setHistoryVersion((v) => v + 1);
+  }, []);
+
+  /** Sends positions to the session's shared layout (saved, and pushed to other browsers). */
+  const shareLayout = useCallback((map: Record<string, XY>) => {
+    if (!Object.keys(map).length) return;
+    Object.assign(unsentLayout.current, map);
+    postLayout(map)
+      .catch(() => undefined)
+      .finally(() => {
+        for (const [id, p] of Object.entries(map)) if (unsentLayout.current[id] === p) delete unsentLayout.current[id];
+      });
+  }, []);
+
+  const autoLayout = useCallback((record = false) => {
+    const s = stateRef.current;
+    if (!s) return;
+    const before = Object.fromEntries(s.nodes.map((n) => [n.id, positions.current[n.id]]).filter(([, p]) => p));
+    // Tidy moves nodes but keeps the sizes the user gave them.
+    const laid = Object.fromEntries(
+      Object.entries(dagreLayout(s.nodes, s.edges, s.direction, sizeOf)).map(([id, p]) => [id, { ...positions.current[id], ...p }]),
+    );
+    Object.assign(positions.current, laid);
+    if (record) pushStep({ kind: "layout", before, after: laid });
+    shareLayout(laid);
+    setNodes((nds) => nds.map((n) => place(n, positions.current[n.id])));
+    setTimeout(() => fit(), 30);
+  }, [fit, pushStep, shareLayout, sizeOf]);
+
+  const setPosition = useCallback((id: string, pos: XY) => {
+    positions.current[id] = pos;
+    shareLayout({ [id]: pos });
+    setNodes((nds) => nds.map((n) => (n.id === id ? place(n, pos) : n)));
+  }, [shareLayout]);
+
+  // --- server state → editor ---------------------------------------------------
+
+  const flashTouched = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    setTouched((prev) => new Set([...prev, ...ids]));
+    setTimeout(() => {
+      setTouched((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }, TOUCH_HIGHLIGHT_MS);
+  }, []);
+
+  const receiveState = useCallback(
+    (next: BrowserState, event?: ChangeEvent) => {
+      const prev = stateRef.current;
+      if (!prev || prev.sessionId !== next.sessionId) {
+        positions.current = {};
+        sizes.current = {};
+        pendingGroups.current.clear();
+        undoSteps.current = [];
+        redoSteps.current = [];
+        setActiveMark(null);
+        setEditingId(null);
+        if (prev) setActivity([]);
+      }
+      // The server's layout wins, except for nodes this tab is dragging or has just moved.
+      for (const [id, p] of Object.entries(next.layout)) {
+        if (!dragging.current.has(id) && !unsentLayout.current[id]) positions.current[id] = p;
+      }
+      // Mostly-new graphs (first drawing, agent redraw) get a full layout; small edits keep the user's layout.
+      const unplaced = next.nodes.filter((n) => !positions.current[n.id]).map((n) => n.id);
+      const relayout = unplaced.length > 1 && unplaced.length > next.nodes.length / 2;
+      positions.current = placeMissing(next.nodes, next.edges, next.direction, positions.current, sizeOf);
+      if (!relayout) shareLayout(Object.fromEntries(unplaced.map((id) => [id, positions.current[id]])));
+
+      stateRef.current = next;
+      setState(next);
+      // Sequence timelines are computed, so frame them when one first appears.
+      if (next.type === "sequence" && (!prev || prev.type !== next.type || prev.sessionId !== next.sessionId)) setTimeout(() => fit(), 80);
+      revisionWaiters.current.splice(0).forEach((fn) => fn());
+
+      if (event) {
+        const items = event.ops.map((op, i) => ({
+          key: `${event.revision}-${i}`,
+          source: event.source,
+          actor: event.actor,
+          text: describeOp(op),
+          target: opTarget(op),
+        }));
+        setActivity((a) => [...items.reverse(), ...a].slice(0, 60));
+        if (event.source === "agent") {
+          flashTouched(
+            items.flatMap((i) => (i.target && "element" in i.target ? [i.target.element] : i.target ? [`#${i.target.mark}`] : [])),
+          );
+        }
+      }
+      // Laid out once real node sizes have been measured; autoLayout also fits the view.
+      if (relayout || event?.ops.some((op) => op.op === "set_direction")) setTimeout(() => autoLayout(), 80);
+      else if (event?.ops.some((op) => op.op === "replace_diagram")) setTimeout(() => fit(), 80);
+    },
+    [autoLayout, fit, flashTouched, shareLayout, sizeOf],
+  );
+
+  /** Positions moved in another browser (or tab) on the same session. */
+  const receiveLayout = useCallback((map: Record<string, XY>) => {
+    const apply = Object.fromEntries(Object.entries(map).filter(([id]) => !dragging.current.has(id) && !unsentLayout.current[id]));
+    Object.assign(positions.current, apply);
+    setNodes((nds) => nds.map((n) => (apply[n.id] ? place(n, apply[n.id]) : n)));
+  }, []);
+
+  useEffect(
+    () =>
+      connectSocket((m) => {
+        if (m.type === "state") {
+          setMissingSession(false);
+          receiveState(m.state, m.event);
+        } else if (m.type === "layout") receiveLayout(m.positions);
+        else if (m.type === "agents") setAgents(m.agents);
+        else if (m.type === "sessions") setSessionList(m.sessions);
+        else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
+      }, setConnected),
+    [receiveLayout, receiveState],
+  );
+
+  useEffect(() => {
+    document.title = SESSION === "default" ? "Visual Agent Canvas" : `${SESSION} · Visual Agent Canvas`;
+  }, []);
+
+  // Rebuild React Flow elements whenever semantic state changes; keep selection/measurements.
+  useEffect(() => {
+    if (!state) return;
+    if (state.type === "sequence") {
+      const marks = new Map<string, number[]>();
+      for (const a of state.annotations) for (const id of a.elementIds ?? []) marks.set(id, [...(marks.get(id) ?? []), a.id]);
+      const select = pendingSelect.current;
+      pendingSelect.current = null;
+      const { nodes: built, layout } = buildSequenceNodes(state.sequence, (id) => marks.get(id) ?? [], new Map(rf.getNodes().map((n) => [n.id, n])), select);
+      seqLayout.current = layout;
+      setNodes(built as unknown as CanvasNode[]);
+      setEdges([]);
+      return;
+    }
+    const nodeMarks = new Map<string, number[]>();
+    const edgeMarks = new Map<string, number[]>();
+    for (const a of state.annotations) {
+      a.nodeIds.forEach((id) => nodeMarks.set(id, [...(nodeMarks.get(id) ?? []), a.id]));
+      a.edgeIds.forEach((id) => edgeMarks.set(id, [...(edgeMarks.get(id) ?? []), a.id]));
+    }
+    const select = pendingSelect.current;
+    pendingSelect.current = null;
+    setNodes((prev) => {
+      const byId = new Map(prev.map((n) => [n.id, n]));
+      return state.nodes.map((n) => {
+        const p = positions.current[n.id];
+        return {
+          ...byId.get(n.id),
+          id: n.id,
+          type: n.shape,
+          position: { x: p?.x ?? 0, y: p?.y ?? 0 },
+          width: p?.w,
+          height: undefined,
+          ...(select ? { selected: select.has(n.id) } : {}),
+          data: { label: n.label, shape: n.shape, marks: nodeMarks.get(n.id) ?? [], direction: state.direction, status: n.status, w: p?.w, minHeight: p?.h },
+        };
+      });
+    });
+    setEdges((prev) => {
+      const byId = new Map(prev.map((e) => [e.id, e]));
+      return state.edges.map((e) => ({
+        ...byId.get(e.id),
+        id: e.id,
+        source: e.from,
+        target: e.to,
+        type: "canvas",
+        ...(select ? { selected: select.has(e.id) } : {}),
+        markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, ...(e.status ? { color: STATUS_COLOR[e.status] } : {}) },
+        data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status },
+      }));
+    });
+  }, [state]);
+
+  useEffect(() => {
+    const capture = (e: KeyboardEvent) => {
+      const buf = typeAhead.current;
+      if (!buf || buf.then || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length === 1) buf.text += e.key;
+      else if (e.key === "Backspace") buf.text = buf.text.slice(0, -1);
+      else if (e.key === "Enter") buf.then = "enter";
+      else if (e.key === "Tab") buf.then = "tab";
+      else if (e.key === "Escape") typeAhead.current = null;
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", capture, true);
+    return () => window.removeEventListener("keydown", capture, true);
+  }, []);
+
+  // --- editor → server ---------------------------------------------------------
+
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+
+  const waitForRevision = (revision: number) =>
+    (stateRef.current?.revision ?? 0) >= revision
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          revisionWaiters.current.push(resolve);
+          setTimeout(resolve, 1500);
+        });
+
+  /**
+   * Serialized so consecutive edits use the latest revision. On a conflict (the agent
+   * committed in between) the edit is retried once against the fresh state; the server
+   * still validates every reference, so nothing stale can slip through.
+   */
+  const send = useCallback(
+    (operations: Operation[], group?: string): Promise<PatchResponse | undefined> => {
+      // A follow-up edit to a just-created node/mark joins its creation step (one undo removes both).
+      if (!group && operations.length === 1 && "id" in operations[0]) {
+        const op = operations[0];
+        const key =
+          op.op === "update_node"
+            ? `node:${op.id}`
+            : op.op === "update_annotation"
+              ? `mark:${op.id}`
+              : ["update_message", "update_note", "update_participant", "update_fragment"].includes(op.op)
+                ? `seq:${op.id}`
+                : undefined;
+        if (key) {
+          group = pendingGroups.current.get(key);
+          pendingGroups.current.delete(key);
+        }
+      }
+      const attempt = async (retry: boolean): Promise<PatchResponse | undefined> => {
+        const s = stateRef.current;
+        if (!s) return undefined;
+        try {
+          const res = await postPatch(s.revision, operations, group);
+          if (res.undoable) pushStep({ kind: "semantic", group });
+          await waitForRevision(res.revision);
+          return res;
+        } catch (err) {
+          if (err instanceof ConflictError && retry) {
+            await waitForRevision(s.revision + 1);
+            return attempt(false);
+          }
+          showToast(err instanceof ConflictError ? "The agent changed the same thing at the same moment — please redo your last edit." : String((err as Error).message ?? err));
+          return undefined;
+        }
+      };
+      const p = queue.current.then(() => attempt(true));
+      queue.current = p;
+      return p;
+    },
+    [pushStep, showToast],
+  );
+
+  const applyPositions = useCallback((map: Record<string, XY>) => {
+    Object.assign(positions.current, map);
+    shareLayout(map);
+    setNodes((nds) => nds.map((n) => (map[n.id] ? place(n, map[n.id]) : n)));
+  }, [shareLayout]);
+
+  /** Ctrl+Z / Ctrl+Shift+Z. Runs in the send queue so it never races a pending edit. */
+  const travel = useCallback(
+    (direction: "undo" | "redo") => {
+      const run = async () => {
+        const [from, to] = direction === "undo" ? [undoSteps, redoSteps] : [redoSteps, undoSteps];
+        const step = from.current.pop();
+        if (!step) return;
+        setEditingId(null);
+        if (step.kind === "layout") {
+          applyPositions(direction === "undo" ? step.before : step.after);
+          to.current.push(step);
+        } else {
+          try {
+            const res = await postHistory(direction);
+            to.current.push(step);
+            await waitForRevision(res.revision);
+            const first = res.ops[0] ? describeOp(res.ops[0]) : "";
+            showToast(`${direction === "undo" ? "Undone" : "Redone"}: ${first}${res.ops.length > 1 ? ` (+${res.ops.length - 1} more)` : ""}`);
+          } catch (err) {
+            showToast(`${(err as Error).message.replace(/^can't/, "Can't")}`);
+          }
+        }
+        setHistoryVersion((v) => v + 1);
+      };
+      queue.current = queue.current.then(run, run);
+    },
+    [applyPositions, showToast],
+  );
+
+  const selectOnly = useCallback((ids: string[]) => {
+    const set = new Set(ids);
+    pendingSelect.current = set;
+    setNodes((nds) => nds.map((n) => ({ ...n, selected: set.has(n.id) })));
+    setEdges((eds) => eds.map((e) => ({ ...e, selected: set.has(e.id) })));
+  }, []);
+
+  const seq = useSequence(
+    useMemo(() => ({ stateRef, layoutRef: seqLayout, send, selectOnly, setEditingId, pendingGroups, typeAhead }), [selectOnly, send]),
+  );
+  const isSeq = state?.type === "sequence";
+
+  /** Decision branches get Yes, then No, automatically; easy to change afterwards. */
+  const autoEdgeLabel = useCallback((fromId: string): { label?: string } => {
+    const s = stateRef.current;
+    if (s?.nodes.find((n) => n.id === fromId)?.shape !== "decision") return {};
+    const used = new Set(s.edges.filter((e) => e.from === fromId).map((e) => e.label?.toLowerCase()));
+    if (!used.has("yes")) return { label: "Yes" };
+    if (!used.has("no")) return { label: "No" };
+    return {};
+  }, []);
+
+  /** Creates a node centred on `center`, optionally connected, then selects it and opens its label editor. */
+  const createNode = useCallback(
+    async (shape: NodeShape, center: XY, link?: { id: string; as: "source" | "target" }) => {
+      typeAhead.current = { text: "", then: null };
+      const group = crypto.randomUUID();
+      const res = await send([{ op: "add_node", label: DEFAULT_LABEL[shape], shape }], group);
+      const id = res?.createdNodeIds?.[0];
+      if (!id) {
+        typeAhead.current = null;
+        return;
+      }
+      pendingGroups.current.set(`node:${id}`, group);
+      const size = DEFAULT_SIZE[shape];
+      setPosition(id, { x: center.x - size.width / 2, y: center.y - size.height / 2 });
+      if (link) {
+        const [from, to] = link.as === "source" ? [link.id, id] : [id, link.id];
+        await send([{ op: "add_edge", from, to, ...autoEdgeLabel(from) }], group);
+      }
+      selectOnly([id]);
+      setEditingId(id);
+    },
+    [autoEdgeLabel, selectOnly, send, setPosition],
+  );
+
+  const pointerOrCenter = useCallback((): XY => {
+    const pane = document.querySelector(".canvas-pane")?.getBoundingClientRect();
+    const p = pointer.current ?? { x: pane ? pane.left + pane.width / 2 : innerWidth / 2, y: pane ? pane.top + pane.height / 2 : innerHeight / 2 };
+    return rf.screenToFlowPosition(p);
+  }, [rf]);
+
+  const addNext = useCallback(
+    (fromId: string) => {
+      const s = stateRef.current;
+      const from = rf.getNode(fromId);
+      if (!s || !from) return;
+      const r = nodeRect(from);
+      const size = DEFAULT_SIZE.action;
+      const lr = s.direction === "LR";
+      let center = lr ? { x: r.x + r.width + 80 + size.width / 2, y: r.y + r.height / 2 } : { x: r.x + r.width / 2, y: r.y + r.height + 70 + size.height / 2 };
+      const others = rf.getNodes().map(nodeRect);
+      for (let i = 0; i < 12; i++) {
+        const box = { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size };
+        if (!others.some((o) => overlaps(box, o))) break;
+        center = lr ? { ...center, y: center.y + size.height + 40 } : { ...center, x: center.x + size.width + 40 };
+      }
+      setEditingId(null);
+      void createNode("action", center, { id: fromId, as: "source" });
+    },
+    [createNode, rf],
+  );
+
+  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
+    // Removal goes through the server (onBeforeDelete); everything else here is visual-only.
+    const visual = changes.filter((c) => c.type !== "remove");
+    if (visual.some((c) => c.type === "select")) pendingSelect.current = null;
+    for (const c of visual) {
+      if (c.type === "position" && c.position) positions.current[c.id] = { ...positions.current[c.id], ...c.position };
+      if (c.type === "dimensions" && c.dimensions) sizes.current[c.id] = c.dimensions;
+    }
+    setNodes((nds) => applyNodeChanges(visual, nds));
+  }, []);
+
+  const onNodeDragStart = useCallback((_: unknown, __: unknown, dragged: CanvasNode[]) => {
+    dragStart.current = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
+    dragged.forEach((n) => dragging.current.add(n.id));
+  }, []);
+
+  const onNodeDragStop = useCallback(
+    (_: unknown, __: unknown, dragged: CanvasNode[]) => {
+      const before = dragStart.current;
+      const after = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
+      dragged.forEach((n) => dragging.current.delete(n.id));
+      if (dragged.some((n) => before[n.id] && (before[n.id].x !== n.position.x || before[n.id].y !== n.position.y))) {
+        pushStep({ kind: "layout", before, after });
+        shareLayout(after);
+      }
+    },
+    [pushStep, shareLayout],
+  );
+
+  /** End of a resize (drag a corner of a selected node): the size is layout, shared and undoable like a move. */
+  const resizeNode = useCallback(
+    (id: string, r: { x: number; y: number; width: number; height: number }) => {
+      const before = { ...positions.current[id] };
+      const after = { x: r.x, y: r.y, w: Math.round(r.width), h: Math.round(r.height) };
+      positions.current[id] = after;
+      pushStep({ kind: "layout", before: { [id]: before }, after: { [id]: after } });
+      shareLayout({ [id]: after });
+      setNodes((nds) => nds.map((n) => (n.id === id ? place(n, after) : n)));
+    },
+    [pushStep, shareLayout],
+  );
+
+  const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
+    if (changes.some((c) => c.type === "select")) pendingSelect.current = null;
+    setEdges((eds) => applyEdgeChanges(changes.filter((c) => c.type !== "remove"), eds));
+  }, []);
+
+  const onBeforeDelete: OnBeforeDelete<CanvasNode, CanvasEdge> = useCallback(
+    async ({ nodes: delNodes, edges: delEdges }) => {
+      if (stateRef.current?.type === "sequence") {
+        const ops = seq.deleteOps(delNodes.map((n) => n.id).filter((id) => !isDecoration(id)));
+        if (ops.length) void send(ops);
+        return false;
+      }
+      const gone = new Set(delNodes.map((n) => n.id));
+      const ops: Operation[] = [
+        ...delEdges.filter((e) => !gone.has(e.source) && !gone.has(e.target)).map((e) => ({ op: "remove_edge" as const, id: e.id })),
+        ...delNodes.map((n) => ({ op: "remove_node" as const, id: n.id })),
+      ];
+      if (ops.length) void send(ops);
+      return false;
+    },
+    [send, seq],
+  );
+
+  const onConnect = useCallback(
+    (c: Connection) => {
+      if (c.source && c.target) void send([{ op: "add_edge", from: c.source, to: c.target, ...autoEdgeLabel(c.source) }]);
+    },
+    [autoEdgeLabel, send],
+  );
+
+  /** Dropping a connector on a node body connects to it; on empty canvas it creates a connected step. */
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, cs) => {
+      if (cs.isValid || !cs.fromNode) return;
+      const fromId = cs.fromNode.id;
+      if (stateRef.current?.type === "sequence") {
+        // Dropped on a lane header: message at the end; anywhere else: on the nearest lane, at that point in time.
+        const { clientX, clientY } = "changedTouches" in event ? event.changedTouches[0] : event;
+        const hit = document.elementFromPoint(clientX, clientY)?.closest(".react-flow__node-seqParticipant")?.getAttribute("data-id");
+        if (hit) void seq.addMessage({ from: fromId, to: hit });
+        else seq.messageAt(rf.screenToFlowPosition({ x: clientX, y: clientY }), fromId);
+        return;
+      }
+      const asSource = cs.fromHandle?.type !== "target";
+      const { clientX, clientY } = "changedTouches" in event ? event.changedTouches[0] : event;
+      const hit = document.elementFromPoint(clientX, clientY)?.closest(".react-flow__node")?.getAttribute("data-id");
+      if (hit && hit !== fromId) {
+        const [from, to] = asSource ? [fromId, hit] : [hit, fromId];
+        void send([{ op: "add_edge", from, to, ...autoEdgeLabel(from) }]);
+      } else if (!hit) {
+        void createNode("action", rf.screenToFlowPosition({ x: clientX, y: clientY }), { id: fromId, as: asSource ? "source" : "target" });
+      }
+    },
+    [autoEdgeLabel, createNode, rf, send, seq],
+  );
+
+  const onReconnect = useCallback(
+    (old: CanvasEdge, c: Connection) => {
+      if (c.source && c.target && (c.source !== old.source || c.target !== old.target)) {
+        void send([{ op: "update_edge", id: old.id, from: c.source, to: c.target }]);
+      }
+    },
+    [send],
+  );
+
+  const onPaneDoubleClick = useCallback(
+    (e: ReactMouseEvent) => {
+      const el = e.target as Element;
+      if (el.closest(".react-flow__pane") && !el.closest(".react-flow__node, .react-flow__edge, .selection-bar")) {
+        const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        if (stateRef.current?.type === "sequence") seq.messageAt(at);
+        else void createNode("action", at);
+      }
+    },
+    [createNode, rf, seq],
+  );
+
+  // --- marks -------------------------------------------------------------------
+
+  const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
+  const selectedEdges = useMemo(() => edges.filter((e) => e.selected), [edges]);
+
+  /**
+   * Box selection also picks up edges attached to the boxed nodes; the ring already covers
+   * those, so only edges chosen away from the selected nodes become explicit targets.
+   */
+  const markTargets = useCallback((): { nodeIds: string[]; edgeIds: string[]; elementIds?: string[] } => {
+    if (stateRef.current?.type === "sequence") return { nodeIds: [], edgeIds: [], elementIds: selectedNodes.map((n) => n.id).filter((id) => !isDecoration(id)) };
+    const nodeIds = selectedNodes.map((n) => n.id);
+    const picked = new Set(nodeIds);
+    const edgeIds = selectedEdges.filter((e) => !picked.has(e.source) && !picked.has(e.target)).map((e) => e.id);
+    return { nodeIds, edgeIds };
+  }, [selectedEdges, selectedNodes]);
+
+  const createMark = useCallback(
+    async (kind?: AnnotationKind) => {
+      const targets = markTargets();
+      if (!targets.nodeIds.length && !targets.edgeIds.length && !targets.elementIds?.length) return;
+      const group = crypto.randomUUID();
+      const res = await send([{ op: "add_annotation", ...targets, ...(kind ? { kind } : {}) }], group);
+      const id = res?.createdAnnotationIds?.[0];
+      if (id) {
+        pendingGroups.current.set(`mark:${id}`, group);
+        setActiveMark(id);
+        setNoteFocus(id);
+      }
+    },
+    [markTargets, send],
+  );
+
+  const markElements = (a: Annotation) => {
+    const s = stateRef.current;
+    const endpoints = a.edgeIds.flatMap((id) => {
+      const e = s?.edges.find((x) => x.id === id);
+      return e ? [e.from, e.to] : [];
+    });
+    const elements = a.elementIds ?? [];
+    return { select: [...a.nodeIds, ...a.edgeIds, ...elements], frame: [...new Set([...a.nodeIds, ...endpoints, ...elements])] };
+  };
+
+  const activateMark = useCallback(
+    (a: Annotation) => {
+      setActiveMark(a.id);
+      const { select, frame } = markElements(a);
+      selectOnly(select);
+      if (frame.length) fit(frame);
+    },
+    [fit, selectOnly],
+  );
+
+  const focusMarkById = useCallback(
+    (id: number) => {
+      const a = stateRef.current?.annotations.find((x) => x.id === id);
+      if (a) activateMark(a);
+    },
+    [activateMark],
+  );
+
+  const reveal = useCallback(
+    (t: OpTarget) => {
+      if (!t) return;
+      if ("mark" in t) return focusMarkById(t.mark);
+      const s = stateRef.current;
+      if (s?.type === "sequence") {
+        if (rf.getNode(t.element)) {
+          selectOnly([t.element]);
+          fit([t.element]);
+        }
+        return;
+      }
+      const edge = s?.edges.find((e) => e.id === t.element);
+      if (edge) {
+        selectOnly([edge.id]);
+        fit([edge.from, edge.to]);
+      } else if (s?.nodes.some((n) => n.id === t.element)) {
+        selectOnly([t.element]);
+        fit([t.element]);
+      }
+    },
+    [fit, focusMarkById, rf, selectOnly],
+  );
+
+  const copy = useCallback(
+    async (text: string, what: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(`${what} copied — paste it into the agent chat`);
+      } catch {
+        showToast("Clipboard not available in this browser");
+      }
+    },
+    [showToast],
+  );
+
+  const changeDirection = useCallback(async () => {
+    const s = stateRef.current;
+    if (!s) return;
+    await send([{ op: "set_direction", direction: s.direction === "TD" ? "LR" : "TD" }]);
+  }, [send]);
+
+  const clearCanvas = useCallback(async () => {
+    if (confirm(`Clear session "${SESSION}"? Its diagram and all marks are discarded and mark numbering restarts at #1.`)) {
+      await postReset();
+    }
+  }, []);
+
+  // --- keyboard ----------------------------------------------------------------
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target) || editingId) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
+        e.preventDefault();
+        travel(e.key.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectOnly([...nodes.map((n) => n.id).filter((id) => !isDecoration(id)), ...edges.map((x) => x.id)]);
+        return;
+      }
+      if (mod || e.altKey) return;
+      const single = selectedNodes.length + selectedEdges.length === 1 ? (selectedNodes[0]?.id ?? selectedEdges[0]?.id) : undefined;
+      const s = stateRef.current;
+      if (s?.type === "sequence") {
+        const handledSeq = sequenceKey(e.key, single, s);
+        if (handledSeq !== undefined) {
+          if (handledSeq) e.preventDefault();
+          return;
+        }
+      }
+      const handled = (() => {
+        switch (e.key) {
+          case "n":
+          case "N":
+            return void createNode("action", pointerOrCenter()), true;
+          case "d":
+          case "D":
+            return void createNode("decision", pointerOrCenter()), true;
+          case "t":
+          case "T":
+            return void createNode("terminal", pointerOrCenter()), true;
+          case "Tab":
+            return selectedNodes.length === 1 && !selectedEdges.length ? (addNext(selectedNodes[0].id), true) : false;
+          case "Enter":
+          case "F2":
+            return single ? (setEditingId(single), true) : false;
+          case "m":
+          case "M":
+            return selectedNodes.length || selectedEdges.length ? (void createMark(), true) : false;
+          case "l":
+          case "L":
+            return autoLayout(true), true;
+          case "f":
+          case "F":
+            return fit(), true;
+          case "?":
+            return setHelpOpen((h) => !h), true;
+          case "Escape":
+            setHelpOpen(false);
+            setActiveMark(null);
+            selectOnly([]);
+            return true;
+          default:
+            return false;
+        }
+      })();
+      if (handled) e.preventDefault();
+    };
+    /** Sequence keys: true = handled, false = ignored, undefined = fall through to the shared keys. */
+    const sequenceKey = (key: string, single: string | undefined, s: BrowserState): boolean | undefined => {
+      const lane = single ? s.sequence.participants.find((p) => p.id === single) : undefined;
+      const item = single && !lane ? [...walkItems(s.sequence.items)].find((l) => l.item.id === single)?.item : undefined;
+      switch (key) {
+        case "n":
+        case "N":
+          if (item?.type === "message") seq.nextMessage(item.id);
+          else if (lane) void seq.addMessage({ from: lane.id });
+          else void seq.addMessage(item ? { position: { after: item.id } } : {});
+          return true;
+        case "p":
+        case "P":
+          return void seq.addParticipant(), true;
+        case "Tab":
+          return item?.type === "message" ? (seq.nextMessage(item.id), true) : false;
+        case "Enter":
+        case "F2":
+          if (!single || item?.type === "activate" || item?.type === "deactivate") return false;
+          return setEditingId(item?.type === "fragment" ? `${single}::0` : single), true;
+        case "ArrowLeft":
+        case "ArrowRight":
+          return item ? (seq.moveItem(item.id, key === "ArrowLeft" ? "earlier" : "later"), true) : false;
+        case "ArrowUp":
+        case "ArrowDown":
+          return lane ? (seq.moveLane(lane.id, key === "ArrowUp" ? "up" : "down"), true) : false;
+        case "d":
+        case "D":
+        case "t":
+        case "T":
+        case "l":
+        case "L":
+          return false;
+        default:
+          return undefined;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, travel]);
+
+  // --- render ------------------------------------------------------------------
+
+  const actions: CanvasActions = useMemo(
+    () => ({
+      editingId,
+      setEditingId,
+      renameNode: (id, label) => void send([{ op: "update_node", id, label }]),
+      relabelEdge: (id, label) => void send([{ op: "update_edge", id, label: label || null }]),
+      addNext,
+      focusMark: focusMarkById,
+      activeMark: hoverMark ?? activeMark,
+      markKinds: Object.fromEntries((state?.annotations ?? []).map((a) => [a.id, a.kind ?? "none"])),
+      touched,
+      takeTypeAhead: () => {
+        const buf = typeAhead.current;
+        typeAhead.current = null;
+        return buf;
+      },
+      editSequence: seq.editSequence,
+      resizeNode,
+      nextMessage: seq.nextMessage,
+    }),
+    [activeMark, addNext, editingId, focusMarkById, hoverMark, resizeNode, send, seq, state, touched],
+  );
+
+  const singleEdge = selectedEdges.length === 1 && !selectedNodes.length ? selectedEdges[0] : undefined;
+  const decisionEdge = !!singleEdge && state?.nodes.find((n) => n.id === singleEdge.source)?.shape === "decision";
+
+  return (
+    <ActionsContext.Provider value={actions}>
+      <div className="app">
+        <header className="topbar">
+          <strong className="title">Visual Agent Canvas</strong>
+          <SessionMenu sessions={sessionList} title={state?.title} onClear={clearCanvas} onError={showToast} />
+          <span className={`status ${connected ? "on" : "off"}`} title={`Revision ${state?.revision ?? "–"} · saved on the server`}>
+            {connected ? "● live" : "○ reconnecting…"}
+          </span>
+          <AgentPresence agents={agents} />
+          <div className="spacer" />
+          {isSeq ? (
+            <div className="toolgroup">
+              <button onClick={() => void seq.addParticipant()} title="Add a participant lane (P)">
+                ☰ Participant <kbd>P</kbd>
+              </button>
+              <button onClick={() => void seq.addMessage()} title="Add a message at the end (N) — or double-click a lane at the point in time">
+                → Message <kbd>N</kbd>
+              </button>
+              <button
+                onClick={() => {
+                  const first = stateRef.current?.sequence.participants[0]?.id;
+                  if (first) void send([{ op: "add_note", participants: [first], text: "Note" }]);
+                }}
+                disabled={!state?.sequence.participants.length}
+                title="Add a note at the end (then change its lane or text)"
+              >
+                ▤ Note
+              </button>
+              <button
+                className={freezeLanes ? "on" : ""}
+                onClick={toggleFreezeLanes}
+                title="Keep lane names visible at the left edge when you scroll along the timeline"
+              >
+                📌 Lane names
+              </button>
+            </div>
+          ) : (
+            <div className="toolgroup">
+              <button onClick={() => createNode("action", pointerOrCenter())} title="Add step (N) — or double-click the canvas">
+                ▭ Step <kbd>N</kbd>
+              </button>
+              <button onClick={() => createNode("decision", pointerOrCenter())} title="Add decision (D)">
+                ◇ Decision <kbd>D</kbd>
+              </button>
+              <button onClick={() => createNode("terminal", pointerOrCenter())} title="Add start / end (T)">
+                ⬭ Start/End <kbd>T</kbd>
+              </button>
+            </div>
+          )}
+          <div className="toolgroup">
+            <button onClick={() => travel("undo")} disabled={!undoSteps.current.length} title="Undo your last change (Ctrl+Z)">
+              ↶ Undo
+            </button>
+            <button onClick={() => travel("redo")} disabled={!redoSteps.current.length} title="Redo (Ctrl+Shift+Z)">
+              ↷
+            </button>
+          </div>
+          <div className="toolgroup">
+            {!isSeq && (
+              <button onClick={() => autoLayout(true)} disabled={!nodes.length} title="Tidy layout (L)">
+                ⤧ Tidy
+              </button>
+            )}
+            <button onClick={() => fit()} disabled={!nodes.length} title="Fit to screen (F)">
+              ⛶ Fit
+            </button>
+            {!isSeq && (
+              <button onClick={changeDirection} title="Switch flow direction (re-lays out)">
+                {state?.direction === "LR" ? "→ Left-right" : "↓ Top-down"}
+              </button>
+            )}
+          </div>
+          <div className="toolgroup">
+            <button onClick={() => setHelpOpen(true)} title="Keyboard shortcuts (?)">
+              ?
+            </button>
+          </div>
+        </header>
+
+        <div className="main">
+          <div
+            className="canvas-pane"
+            onMouseMove={(e) => (pointer.current = { x: e.clientX, y: e.clientY })}
+            onMouseLeave={() => (pointer.current = null)}
+            onDoubleClick={onPaneDoubleClick}
+          >
+            <ReactFlow<CanvasNode, CanvasEdge>
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={allNodeTypes}
+              edgeTypes={edgeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onBeforeDelete={onBeforeDelete}
+              onConnect={onConnect}
+              onConnectEnd={onConnectEnd}
+              onReconnect={onReconnect}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDragStop={onNodeDragStop}
+              onEdgeDoubleClick={(_, e) => setEditingId(e.id)}
+              onPaneClick={() => setActiveMark(null)}
+              deleteKeyCode={editingId ? null : ["Backspace", "Delete"]}
+              multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+              selectionOnDrag
+              selectionMode={isSeq ? SelectionMode.Full : SelectionMode.Partial}
+              panOnDrag={[1, 2]}
+              panOnScroll
+              edgesReconnectable
+              zoomOnDoubleClick={false}
+              minZoom={0.2}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background gap={24} size={1.2} />
+              <Controls showInteractive={false} />
+              <MiniMap pannable zoomable className="minimap" style={{ width: 150, height: 100 }} />
+              {state && (
+                <ChangeLegend
+                  nodes={isSeq ? [...state.sequence.participants, ...[...walkItems(state.sequence.items)].map((l) => l.item)] : state.nodes}
+                  edges={isSeq ? [] : state.edges}
+                  onReveal={(ids) => {
+                    selectOnly(ids);
+                    const s = stateRef.current;
+                    fit(ids.flatMap((id) => {
+                      const edge = s?.edges.find((e) => e.id === id);
+                      return edge ? [edge.from, edge.to] : [id];
+                    }));
+                  }}
+                  onAccept={() => void send([{ op: "accept_changes" }]).then((r) => r && showToast("Changes accepted — Ctrl+Z to undo"))}
+                />
+              )}
+              {isSeq && freezeLanes && state && seqLayout.current && (
+                <FrozenLanes participants={state.sequence.participants} laneY={seqLayout.current.laneY} onSelect={(id) => selectOnly([id])} />
+              )}
+              <MarkRings annotations={state?.annotations ?? []} nodes={nodes} active={hoverMark ?? activeMark} onFocus={focusMarkById} />
+              {!editingId && isSeq && state && (
+                <SequenceBar
+                  sequence={state.sequence}
+                  allNodes={nodes}
+                  nodes={selectedNodes.filter((n) => !isDecoration(n.id))}
+                  send={(ops) => void send(ops)}
+                  onMark={createMark}
+                  onEdit={() => {
+                    const id = selectedNodes[0]?.id;
+                    if (id) setEditingId(stateRef.current?.sequence && rf.getNode(id)?.type === "seqFragment" ? `${id}::0` : id);
+                  }}
+                  onNext={seq.nextMessage}
+                  onMessageFrom={(from) => void seq.addMessage({ from })}
+                  onMove={seq.moveItem}
+                  onMoveLane={seq.moveLane}
+                  onWrap={(kind) => void seq.wrap(kind, selectedNodes.map((n) => n.id))}
+                  onAddSection={seq.addSection}
+                  onDelete={() => void rf.deleteElements({ nodes: selectedNodes.map((n) => ({ id: n.id })) })}
+                />
+              )}
+              {!editingId && !isSeq && (
+                <SelectionBar
+                  allNodes={nodes}
+                  nodes={selectedNodes}
+                  edges={selectedEdges}
+                  decisionEdge={decisionEdge}
+                  onMark={createMark}
+                  onShape={(shape) => void send([{ op: "update_node", id: selectedNodes[0].id, shape }])}
+                  onStatus={(status: ChangeStatus | null) =>
+                    void send([
+                      ...selectedNodes.map((n) => ({ op: "update_node" as const, id: n.id, status })),
+                      ...selectedEdges.map((e) => ({ op: "update_edge" as const, id: e.id, status })),
+                    ])
+                  }
+                  onAddNext={() => addNext(selectedNodes[0].id)}
+                  onEdit={() => setEditingId(selectedNodes[0]?.id ?? selectedEdges[0]?.id)}
+                  onEdgeLabel={(label) => void send([{ op: "update_edge", id: selectedEdges[0].id, label }])}
+                  onDelete={() =>
+                    void rf.deleteElements({ nodes: selectedNodes.map((n) => ({ id: n.id })), edges: selectedEdges.map((e) => ({ id: e.id })) })
+                  }
+                />
+              )}
+            </ReactFlow>
+            {missingSession ? (
+              <MissingSession />
+            ) : (
+              state &&
+              (isSeq ? !state.sequence.participants.length && !state.sequence.items.length : !state.nodes.length) && (
+                <EmptyState
+                  onCopy={copy}
+                  sequence={isSeq}
+                  onSwitch={() => void send([{ op: "set_diagram_type", type: isSeq ? "flowchart" : "sequence" }])}
+                />
+              )
+            )}
+            <ContextHint nodes={selectedNodes.length} edges={selectedEdges.length} editing={!!editingId} empty={!nodes.length} sequence={isSeq} />
+            {toast && (
+              <div className="toast" onClick={() => setToast(null)}>
+                {toast}
+              </div>
+            )}
+          </div>
+
+          <aside className="sidebar">
+            {state && (
+              <MarksPanel
+                state={state}
+                activeMark={activeMark}
+                noteFocus={noteFocus}
+                selectionSize={selectedNodes.length + selectedEdges.length}
+                touched={touched}
+                send={send}
+                onActivate={activateMark}
+                onHover={setHoverMark}
+                onRetarget={(a) => void send([{ op: "update_annotation", id: a.id, ...markTargets() }])}
+                onCopy={copy}
+              />
+            )}
+            <ActivityPanel items={activity} onReveal={reveal} />
+            <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />
+          </aside>
+        </div>
+        <OverflowTip />
+        {helpOpen && <HelpOverlay sequence={isSeq} onClose={() => setHelpOpen(false)} />}
+      </div>
+    </ActionsContext.Provider>
+  );
+}
+
+// --- annotation rings (editor-only geometry) -----------------------------------
+
+function MarkRings({
+  annotations,
+  nodes,
+  active,
+  onFocus,
+}: {
+  annotations: Annotation[];
+  nodes: CanvasNode[];
+  active: number | null;
+  onFocus: (id: number) => void;
+}) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const rings: Array<{ a: Annotation; x: number; y: number; w: number; h: number }> = [];
+  for (const a of annotations) {
+    const rects = [...a.nodeIds, ...(a.elementIds ?? [])].map((id) => byId.get(id)).filter((n): n is CanvasNode => !!n?.position).map(nodeRect);
+    if (!rects.length) continue;
+    const x1 = Math.min(...rects.map((r) => r.x));
+    const y1 = Math.min(...rects.map((r) => r.y));
+    const x2 = Math.max(...rects.map((r) => r.x + r.width));
+    const y2 = Math.max(...rects.map((r) => r.y + r.height));
+    // Nest rings that overlap earlier ones so each stays visible.
+    const stack = rings.filter((r) => r.x < x2 && r.x + r.w > x1 && r.y < y2 && r.y + r.h > y1).length;
+    const pad = 16 + stack * 10;
+    rings.push({ a, x: x1 - pad, y: y1 - pad, w: x2 - x1 + 2 * pad, h: y2 - y1 + 2 * pad });
+  }
+  return (
+    <ViewportPortal>
+      {rings.map(({ a, x, y, w, h }) => (
+        <div
+          key={a.id}
+          className={`ring kind-${a.kind ?? "none"}${active === a.id ? " active" : ""}`}
+          style={{ transform: `translate(${x}px, ${y}px) rotate(${a.id % 2 ? -0.6 : 0.5}deg)`, width: w, height: h }}
+        >
+          <button className="ring-badge" onClick={() => onFocus(a.id)} aria-label={`Open mark #${a.id}`}>
+            <span>#{a.id}</span>
+            {a.kind && <span className="ring-kind">{KIND_META[a.kind].icon}</span>}
+            {a.text && <span className="ring-text">{a.text}</span>}
+          </button>
+        </div>
+      ))}
+    </ViewportPortal>
+  );
+}
+
+// --- chrome ------------------------------------------------------------------
+
+const ago = (at: number) => {
+  const secs = Math.round((Date.now() - at) / 1000);
+  return secs < 10 ? "just now" : secs < 60 ? `${secs}s ago` : secs < 3600 ? `${Math.round(secs / 60)}m ago` : "a while ago";
+};
+
+/** One chip per agent that used this session, most recent first. */
+function AgentPresence({ agents }: { agents: AgentInfo[] }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 5000);
+    return () => clearInterval(t);
+  }, []);
+  if (!agents.length) {
+    return (
+      <span className="agent idle" data-tip={`No agent has used this session yet. Tell your agent to use ${canvasRef()}.`}>
+        No agent yet
+      </span>
+    );
+  }
+  const sorted = [...agents].sort((a, b) => b.at - a.at);
+  return (
+    <span className="agents">
+      {sorted.slice(0, 3).map((a) => (
+        <span key={a.name} className={`agent${Date.now() - a.at < 5000 ? " busy" : ""}`} data-tip={`${a.name}: last MCP call ${ago(a.at)}`}>
+          <b>{a.name}</b> {describeAgentTool(a.tool)} · {ago(a.at)}
+        </span>
+      ))}
+      {sorted.length > 3 && <span className="agent idle" data-tip={sorted.slice(3).map((a) => a.name).join(", ")}>+{sorted.length - 3}</span>}
+    </span>
+  );
+}
+
+function MissingSession() {
+  return (
+    <div className="empty">
+      <div className="empty-card">
+        <h2>No session “{SESSION}”</h2>
+        <p className="muted">It may have been deleted. Create it from the session menu, or go back to the default canvas.</p>
+        <p>
+          <a href={sessionUrl("default")}>Open the default session</a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number; edges: number; editing: boolean; empty: boolean; sequence: boolean }) {
+  let hint: string;
+  if (sequence) {
+    if (editing) hint = "Enter save · Shift+Enter new line · Tab save & next message · Esc cancel";
+    else if (nodes === 1) hint = "Enter edit · ← → earlier / later · ↑ ↓ move lane · N next message · M mark · Del delete";
+    else if (nodes) hint = `${nodes} selected · group them with alt / par / loop… on the bar · M mark · Del delete`;
+    else if (empty) hint = "P add a participant · N add a message · ? shortcuts";
+    else hint = "Double-click a lane to add a message there · drag from a lane's ● onto another lane · drag to select · ? shortcuts";
+    return <div className="context-hint">{hint}</div>;
+  }
+  if (editing) hint = "Enter save · Tab save & add next step · Esc cancel";
+  else if (nodes === 1 && !edges) hint = "Enter rename · Tab add next step · M mark · drag a handle to connect · Del delete";
+  else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end to reconnect · Del delete";
+  else if (nodes || edges) hint = `${nodes + edges} selected · M mark selection · Del delete`;
+  else if (empty) hint = "Double-click to add a step · ? shortcuts";
+  else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · ? shortcuts";
+  return <div className="context-hint">{hint}</div>;
+}
+
+function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, what: string) => void; sequence: boolean; onSwitch: () => void }) {
+  const cmd = `claude mcp add --transport http --scope user visual-canvas ${location.origin}/mcp`;
+  const prompt = sequence
+    ? `At high detail, inspect <feature> and show its timing and concurrency (workers, transactions, locks, retries) as a sequence diagram on ${canvasRef()}. No code changes.`
+    : `At low detail, inspect <feature> and show its business logic on ${canvasRef()}. No code changes.`;
+  const skill = `mkdir -p ~/.claude/skills/visual-canvas && curl -s ${location.origin}/skill.md -o ~/.claude/skills/visual-canvas/SKILL.md`;
+  return (
+    <div className="empty">
+      <div className="empty-card">
+        <h2>Start a visual discussion</h2>
+        <ol>
+          <li>
+            <span>Connect your agent once</span>
+            <button className="copyline" onClick={() => onCopy(cmd, "Command")} title="Copy">
+              <code>{cmd}</code> <span>⧉</span>
+            </button>
+          </li>
+          <li>
+            <span>
+              Optional: install the drawing skill (detail levels <i>low / medium / high</i>, conventions). Agents can also fetch it themselves with{" "}
+              <code>canvas_get_visualization_skill</code>.
+            </span>
+            <button className="copyline" onClick={() => onCopy(skill, "Install command")} title="Copy">
+              <code>{skill}</code> <span>⧉</span>
+            </button>
+          </li>
+          <li>
+            <span>Ask it to draw</span>
+            <button className="copyline" onClick={() => onCopy(prompt, "Prompt")} title="Copy">
+              <code>{prompt}</code> <span>⧉</span>
+            </button>
+          </li>
+          <li>
+            <span>Then edit, select and press <kbd>M</kbd> to mark — the agent sees each mark as #N.</span>
+          </li>
+        </ol>
+        <p className="muted">
+          {sequence ? "Or sketch yourself: press P for a participant lane and N for a message." : "Or sketch yourself: double-click anywhere, or press N."}
+        </p>
+        <p className="muted">
+          This canvas is a <b>{sequence ? "sequence diagram" : "flowchart"}</b>.{" "}
+          <button className="linklike" onClick={onSwitch}>
+            {sequence ? "Use a flowchart instead" : "Use a sequence diagram (timeline, concurrency) instead"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const SHORTCUTS: Array<[string, string]> = [
+  ["N / D / T", "Add step / decision / start-end (at the mouse)"],
+  ["Double-click canvas", "Add step there"],
+  ["Enter or F2", "Edit label of the selected node or edge"],
+  ["Tab", "Add a connected next step (also while typing a label)"],
+  ["Shift+Enter", "While typing: add a detail line inside the step; start it with + / - / ~ for added / dropped / modified"],
+  ["New / Changed / Removed", "Selection bar: colour the selection as part of a proposed change (click again to clear)"],
+  ["Drag from a handle", "Connect; drop on empty canvas to create a connected step"],
+  ["M", "Mark the selection (then type the note)"],
+  ["Drag on canvas", "Box-select (touching counts)"],
+  ["Shift / Ctrl-click", "Add to selection"],
+  ["Ctrl+A", "Select all"],
+  ["Del / Backspace", "Delete selection"],
+  ["Space-drag, scroll", "Pan · Ctrl+scroll or pinch to zoom"],
+  ["Ctrl+Z / Ctrl+Shift+Z", "Undo / redo your own changes (incl. moves); never undoes the agent's"],
+  ["L / F", "Tidy layout / fit to screen"],
+  ["Esc", "Clear selection"],
+];
+
+const SEQUENCE_SHORTCUTS: Array<[string, string]> = [
+  ["P / N", "Add a participant lane / a message (after the selection)"],
+  ["Double-click a lane", "Add a message from that lane at that point in time"],
+  ["Drag from a lane's ●", "Drop on another lane: message to it, at the drop point"],
+  ["Enter or F2", "Edit text; Shift+Enter adds a line"],
+  ["Tab", "Next message (a request is answered by a reply)"],
+  ["← / →", "Move the selected item earlier / later (also into and out of blocks)"],
+  ["↑ / ↓", "Move the selected lane up / down"],
+  ["Select items + alt / par / loop…", "Group them in a block; par makes each item its own concurrent branch"],
+  ["M · Del · Ctrl+Z", "Mark · delete · undo, as in flowcharts"],
+  ["Steps 1, 2, 3…", "Logical order only, not time; concurrent and alternative work shares step numbers"],
+];
+
+function HelpOverlay({ onClose, sequence }: { onClose: () => void; sequence: boolean }) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="help" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h2>Keyboard & mouse</h2>
+          <button className="icon" onClick={onClose}>
+            ✕
+          </button>
+        </header>
+        <dl>
+          {(sequence ? SEQUENCE_SHORTCUTS : SHORTCUTS).map(([k, v]) => (
+            <div key={k}>
+              <dt>
+                <kbd>{k}</kbd>
+              </dt>
+              <dd>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </div>
+  );
+}
