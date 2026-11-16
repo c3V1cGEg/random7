@@ -38,6 +38,7 @@ import {
   type Operation,
   type OpTarget,
   type PatchResponse,
+  type SocketMessage,
 } from "./api.ts";
 import { ActionsContext, edgeTypes, nodeTypes, type CanvasActions, type CanvasEdge, type CanvasNode, type TypeAhead } from "./elements.tsx";
 import { KIND_META } from "./kinds.ts";
@@ -238,8 +239,10 @@ function Canvas() {
 
       stateRef.current = next;
       setState(next);
-      // Sequence timelines are computed, so frame them when one first appears.
-      if (next.type === "sequence" && (!prev || prev.type !== next.type || prev.sessionId !== next.sessionId)) setTimeout(() => fit(), 80);
+      // Frame a canvas when it first opens (saved positions may lie anywhere) and when a sequence timeline first appears.
+      // Never on an empty canvas: React Flow would hold the fit back and zoom onto the first node the user adds.
+      const empty = next.type === "sequence" ? !next.sequence.participants.length : !next.nodes.length;
+      if (!empty && (!prev || prev.sessionId !== next.sessionId || (next.type === "sequence" && prev.type !== next.type))) setTimeout(() => fit(), 80);
       revisionWaiters.current.splice(0).forEach((fn) => fn());
 
       if (event) {
@@ -271,19 +274,19 @@ function Canvas() {
     setNodes((nds) => nds.map((n) => (apply[n.id] ? place(n, apply[n.id]) : n)));
   }, []);
 
-  useEffect(
-    () =>
-      connectSocket((m) => {
-        if (m.type === "state") {
-          setMissingSession(false);
-          receiveState(m.state, m.event);
-        } else if (m.type === "layout") receiveLayout(m.positions);
-        else if (m.type === "agents") setAgents(m.agents);
-        else if (m.type === "sessions") setSessionList(m.sessions);
-        else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
-      }, setConnected),
-    [receiveLayout, receiveState],
-  );
+  // Handlers go through a ref: their identities change once React Flow initialises, and
+  // reconnecting on that would open a second socket on every page load.
+  const onSocketMessage = useRef<(m: SocketMessage) => void>(() => undefined);
+  onSocketMessage.current = (m) => {
+    if (m.type === "state") {
+      setMissingSession(false);
+      receiveState(m.state, m.event);
+    } else if (m.type === "layout") receiveLayout(m.positions);
+    else if (m.type === "agents") setAgents(m.agents);
+    else if (m.type === "sessions") setSessionList(m.sessions);
+    else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
+  };
+  useEffect(() => connectSocket((m) => onSocketMessage.current(m), setConnected), []);
 
   useEffect(() => {
     document.title = SESSION === "default" ? "Visual Agent Canvas" : `${SESSION} · Visual Agent Canvas`;

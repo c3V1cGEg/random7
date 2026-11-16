@@ -29,7 +29,8 @@ export function dagreLayout(nodes: GraphNode[], edges: GraphEdge[], direction: D
   g.setGraph({ rankdir: direction === "LR" ? "LR" : "TB", nodesep: 50, ranksep: 70, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) g.setNode(n.id, { ...sizeOf(n) }); // dagre mutates the label object
-  for (const e of edges) g.setEdge(e.from, e.to);
+  // Labelled edges get room for their label plus the mark badge that can sit above the next node.
+  for (const e of edges) g.setEdge(e.from, e.to, e.label ? { width: Math.min(e.label.length * 6.5, 240) + 16, height: 40 } : {});
   dagre.layout(g);
   const out: Record<string, XY> = {};
   for (const n of nodes) {

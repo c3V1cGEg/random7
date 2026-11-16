@@ -206,8 +206,9 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 }
 .badge.active { outline: 2px solid var(--ink); }
 
-.react-flow__handle { width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--node-border); transition: transform 0.1s; }
-.react-flow__node:hover .react-flow__handle { transform: translate(-50%, -50%) scale(1.25); }
+.react-flow__handle { width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--node-border); transition: scale 0.1s; }
+/* `scale`, not `transform`: React Flow positions bottom/right handles with their own translate. */
+.react-flow__node:hover .react-flow__handle { scale: 1.25; }
 .react-flow__handle-top:hover, .react-flow__handle-bottom:hover, .react-flow__handle-left:hover, .react-flow__handle-right:hover { background: var(--accent); }
 
 /* ---- edges ---- */
@@ -385,8 +386,6 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .react-flow__node-seqParticipant .react-flow__handle {
   right: 0; width: 15px; height: 15px; background: var(--accent); border: 2px solid #fff; transform: translate(50%, -50%); cursor: crosshair;
 }
-/* keep the right-hand anchor on hover (the shared rule assumes a centred handle) */
-.react-flow__node-seqParticipant:hover .react-flow__handle { transform: translate(50%, -50%) scale(1.25); }
 
 .seq-message { position: relative; width: 100%; height: 100%; }
 .seq-arrow { position: absolute; inset: 0; overflow: visible; }

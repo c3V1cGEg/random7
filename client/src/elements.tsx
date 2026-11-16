@@ -7,6 +7,7 @@ import {
   getBezierPath,
   NodeResizer,
   useStore,
+  useUpdateNodeInternals,
   type EdgeProps,
   type Node,
   type NodeProps,
@@ -246,6 +247,9 @@ function NodeLabel({ id, label }: { id: string; label: string }) {
 
 export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
   const { setEditingId, touched, editingId, resizeNode } = useContext(ActionsContext);
+  // Handles move sides when the direction flips; React Flow keeps the old anchors until told to re-measure.
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => updateNodeInternals(id), [data.direction, id, updateNodeInternals]);
   const [live, setLive] = useState<{ height: number } | null>(null);
   // A resized node fills the width React Flow gives it; text never gets cut, the height grows instead.
   // Unresized nodes keep their shape's default size from CSS.
@@ -342,6 +346,51 @@ function edgePath(sx: number, sy: number, tx: number, ty: number, sp: Position, 
   return [path, lx, ly];
 }
 
+/** A node's box in flow coordinates: `a` along the flow direction, `c` across it. */
+interface Box {
+  a0: number;
+  a1: number;
+  c0: number;
+  c1: number;
+}
+
+/**
+ * Where a forward edge that skips past other nodes should run (across-flow coordinate) to clear
+ * them, or null when the direct curve is clear. Tries both sides and takes the shorter detour.
+ */
+function detourLane(boxes: Box[], start: number, end: number, cs: number, ct: number): number | null {
+  if (end - start < 160) return null;
+  const inSpan = boxes.filter((b) => b.a1 > start + 10 && b.a0 < end - 10);
+  const lo = Math.min(cs, ct) - 8;
+  const hi = Math.max(cs, ct) + 8;
+  const blocking = inSpan.filter((b) => b.c1 > lo && b.c0 < hi);
+  if (!blocking.length) return null;
+  const clear = (lane: number, dir: 1 | -1) => {
+    for (let moved = true; moved; ) {
+      moved = false;
+      for (const b of inSpan) {
+        if (lane > b.c0 - 30 && lane < b.c1 + 30) {
+          lane = dir > 0 ? b.c1 + 40 : b.c0 - 40;
+          moved = true;
+        }
+      }
+    }
+    return lane;
+  };
+  const right = clear(Math.max(...blocking.map((b) => b.c1)) + 40, 1);
+  const left = clear(Math.min(...blocking.map((b) => b.c0)) - 40, -1);
+  const cost = (lane: number) => Math.abs(lane - cs) + Math.abs(lane - ct);
+  return cost(left) < cost(right) ? left : right;
+}
+
+/** A forward edge that leaves along the flow, runs down a clear lane and comes back in to its target; label near the start. */
+function detourPath(sx: number, sy: number, tx: number, ty: number, lane: number, lr: boolean): [string, number, number] {
+  if (lr) {
+    return [`M ${sx},${sy} C ${sx + 60},${sy} ${sx + 20},${lane} ${sx + 80},${lane} L ${tx - 80},${lane} C ${tx - 20},${lane} ${tx - 60},${ty} ${tx},${ty}`, Math.min(sx + 130, (sx + tx) / 2), lane];
+  }
+  return [`M ${sx},${sy} C ${sx},${sy + 60} ${lane},${sy + 20} ${lane},${sy + 80} L ${lane},${ty - 80} C ${lane},${ty - 20} ${tx},${ty - 60} ${tx},${ty}`, lane, Math.min(sy + 110, (sy + ty) / 2)];
+}
+
 export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<CanvasEdge>) {
   const { id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected, markerEnd } = props;
   const { editingId, setEditingId, relabelEdge, touched } = useContext(ActionsContext);
@@ -360,9 +409,26 @@ export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<Canv
     }
     return count ? Math.round(sum / count) : null;
   });
+  // A forward edge that skips ranks (e.g. "Reviewed → Done") would cut straight through the nodes in between.
+  const lane = useStore((s) => {
+    const forward = sourcePosition === (lr ? Position.Right : Position.Bottom);
+    if (back || !forward) return null;
+    const boxes: Box[] = [];
+    for (const n of s.nodeLookup.values()) {
+      if (n.id === source || n.id === target) continue;
+      const p = n.internals.positionAbsolute;
+      const w = n.measured.width ?? 0;
+      const h = n.measured.height ?? 0;
+      boxes.push(lr ? { a0: p.x, a1: p.x + w, c0: p.y, c1: p.y + h } : { a0: p.y, a1: p.y + h, c0: p.x, c1: p.x + w });
+    }
+    return lr ? detourLane(boxes, sourceX, targetX, sourceY, targetY) : detourLane(boxes, sourceY, targetY, sourceX, targetX);
+  });
   const mid = lr ? (sourceY + targetY) / 2 : (sourceX + targetX) / 2;
   const far = others !== null && mid > others;
-  const [path, lx, ly] = edgePath(sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, far);
+  const [path, lx, ly] =
+    lane !== null
+      ? detourPath(sourceX, sourceY, targetX, targetY, lane, lr)
+      : edgePath(sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, far);
   const marks = data?.marks ?? [];
   const editing = editingId === id;
   const cls = [
