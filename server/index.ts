@@ -17,6 +17,7 @@ import { buildSkill } from "./skill.ts";
 import { TOOL_SPECS, capabilities } from "./tools.ts";
 import { PatchSchema } from "./ops.ts";
 import { DEFAULT_SESSION, SessionManager } from "./sessions.ts";
+import { semanticChange, type SemanticChange } from "./semantic.ts";
 import type { CanvasStore } from "./store.ts";
 import { CanvasError, SIDES } from "./types.ts";
 
@@ -183,6 +184,30 @@ app.get("/api/sessions", (_req, res) => {
   res.json({ sessions: sessions.list() });
 });
 
+// --- agent-facing change stream (Server-Sent Events) ----------------------------------
+// Committed user changes to the diagram or marks, as compact pointers (never content). The Claude
+// Code channel bridge (server/channel.ts) turns them into notifications for a running session.
+// Loopback only, like everything here: the Host check covers DNS rebinding, the Origin check web pages.
+
+const eventStreams = new Set<Response>();
+
+app.get("/api/events", (req, res) => {
+  if (!originAllowed(req.headers.origin)) return void res.status(403).json({ error: "forbidden" });
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+  res.write(": connected\n\n");
+  eventStreams.add(res);
+  const keepAlive = setInterval(() => res.write(": ping\n\n"), 25_000);
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    eventStreams.delete(res);
+  });
+});
+
+function streamChange(change: SemanticChange) {
+  const chunk = `id: ${change.eventId}\nevent: change\ndata: ${JSON.stringify(change)}\n\n`;
+  for (const res of eventStreams) res.write(chunk);
+}
+
 app.post("/api/sessions", (req, res) => {
   try {
     const store = sessions.create(
@@ -335,7 +360,11 @@ wss.on("connection", (ws: WebSocket) => {
 
 let listTimer: ReturnType<typeof setTimeout> | undefined;
 sessions.setEvents({
-  change: (store, event) => broadcast(store.name, { type: "state", state: store.browserState(), event }),
+  change: (store, event) => {
+    broadcast(store.name, { type: "state", state: store.browserState(), event });
+    const change = semanticChange(store.name, store.sessionId, event);
+    if (change) streamChange(change);
+  },
   layout: (store, positions, origin, anchors) => broadcast(store.name, { type: "layout", positions, anchors: anchors ?? {} }, origin),
   // The session list (for the switcher) changes on every edit; coalesce those broadcasts.
   listChanged: () => {
