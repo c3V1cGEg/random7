@@ -163,6 +163,37 @@ test("a burst of diagram and mark edits becomes one event covering both categori
   assert.equal((await collect())[0]?.meta?.categories, "annotations");
 });
 
+test("a new mark stays quiet until its note is written (pressing M, then typing)", async () => {
+  const { createdAnnotationIds } = await userPatch([{ op: "add_annotation", nodeIds: ["c"] }]);
+  const id = createdAnnotationIds![0];
+  await userPatch([{ op: "update_annotation", id, kind: "question" }]);
+  assert.deepEqual(await collect(), [], "an empty mark is still being written");
+  await userPatch([{ op: "update_annotation", id, text: "Who pays shipping?" }]);
+  const [n] = await collect();
+  assert.equal(n?.meta?.categories, "annotations");
+  assert.match(n.content, new RegExp(`#${id}`));
+
+  // An empty mark deleted again is no news either; a written one is.
+  const empty = (await userPatch([{ op: "add_annotation", nodeIds: ["a"] }])).createdAnnotationIds![0];
+  await userPatch([{ op: "remove_annotation", id: empty }]);
+  assert.deepEqual(await collect(), []);
+  await userPatch([{ op: "remove_annotation", id }]);
+  assert.equal((await collect())[0]?.meta?.categories, "annotations");
+});
+
+test("clearing a canvas does not notify", async () => {
+  await fetch(`${BASE}/api/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: BASE },
+    body: JSON.stringify({ name: "scratch" }),
+  });
+  await userPatch([{ op: "add_node", id: "x", label: "Draft" }], "scratch");
+  assert.equal((await collect()).length, 1);
+  const res = await fetch(`${BASE}/api/s/scratch/reset`, { method: "POST", headers: { origin: BASE } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await collect(), []);
+});
+
 test("sequence diagram edits notify; canvas_channel_watch limits sessions", async () => {
   await fetch(`${BASE}/api/sessions`, {
     method: "POST",

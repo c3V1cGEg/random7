@@ -17,7 +17,7 @@ import { buildSkill } from "./skill.ts";
 import { TOOL_SPECS, capabilities } from "./tools.ts";
 import { PatchSchema } from "./ops.ts";
 import { DEFAULT_SESSION, SessionManager } from "./sessions.ts";
-import { semanticChange, type SemanticChange } from "./semantic.ts";
+import { SemanticFilter, type SemanticChange } from "./semantic.ts";
 import type { CanvasStore } from "./store.ts";
 import { CanvasError, SIDES } from "./types.ts";
 
@@ -190,6 +190,7 @@ app.get("/api/sessions", (_req, res) => {
 // Loopback only, like everything here: the Host check covers DNS rebinding, the Origin check web pages.
 
 const eventStreams = new Set<Response>();
+const semantic = new SemanticFilter();
 
 app.get("/api/events", (req, res) => {
   if (!originAllowed(req.headers.origin)) return void res.status(403).json({ error: "forbidden" });
@@ -362,16 +363,19 @@ let listTimer: ReturnType<typeof setTimeout> | undefined;
 sessions.setEvents({
   change: (store, event) => {
     broadcast(store.name, { type: "state", state: store.browserState(), event });
-    const change = semanticChange(store.name, store.sessionId, event);
+    const change = semantic.change(store, event);
     if (change) streamChange(change);
   },
   layout: (store, positions, origin, anchors) => broadcast(store.name, { type: "layout", positions, anchors: anchors ?? {} }, origin),
   // The session list (for the switcher) changes on every edit; coalesce those broadcasts.
   listChanged: () => {
+    for (const { name } of sessions.list()) semantic.track(sessions.get(name)); // new or imported sessions
     clearTimeout(listTimer);
     listTimer = setTimeout(() => broadcast(null, { type: "sessions", sessions: sessions.list() }), 300);
   },
 });
+
+for (const { name } of sessions.list()) semantic.track(sessions.get(name));
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
