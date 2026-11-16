@@ -1105,6 +1105,7 @@ function Canvas() {
               <MarkRings
                 annotations={state?.annotations ?? []}
                 nodes={nodes}
+                edges={isSeq ? [] : (state?.edges ?? [])}
                 active={hoverMark ?? activeMark}
                 onFocus={focusMarkById}
                 onDrag={isSeq ? undefined : dragGroup}
@@ -1203,12 +1204,14 @@ function Canvas() {
 function MarkRings({
   annotations,
   nodes,
+  edges,
   active,
   onFocus,
   onDrag,
 }: {
   annotations: Annotation[];
   nodes: CanvasNode[];
+  edges: Array<{ id: string; from: string; to: string }>;
   active: number | null;
   onFocus: (id: number) => void;
   /** Flowcharts only: moves the ring's nodes by a flow-space delta (null = drag ended). */
@@ -1216,11 +1219,34 @@ function MarkRings({
 }) {
   const zoom = useStore((s) => s.transform[2]);
   const drag = useRef<{ ids: string[]; x: number; y: number; moved: boolean } | null>(null);
+  // Arrows between a ring's own nodes belong inside it: a loop or detour bulging past the nodes would
+  // otherwise leave the ring and come back in. Their drawn extents are measured after each render.
+  const [edgeBoxes, setEdgeBoxes] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
+  const inner = new Map(
+    annotations.map((a) => {
+      const own = new Set(a.nodeIds);
+      return [a.id, edges.filter((e) => own.has(e.from) && own.has(e.to)).map((e) => e.id)] as const;
+    }),
+  );
+  const innerKey = [...new Set([...inner.values()].flat())].sort().join(" ");
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const next: typeof edgeBoxes = {};
+      for (const id of innerKey ? innerKey.split(" ") : []) {
+        const path = document.querySelector<SVGPathElement>(`.react-flow__edge[data-id="${CSS.escape(id)}"] path.react-flow__edge-path`);
+        const b = path?.getBBox();
+        if (b) next[id] = { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) };
+      }
+      setEdgeBoxes((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const rings: Array<{ a: Annotation; x: number; y: number; w: number; h: number }> = [];
   for (const a of annotations) {
-    const rects = [...a.nodeIds, ...(a.elementIds ?? [])].map((id) => byId.get(id)).filter((n): n is CanvasNode => !!n?.position).map(nodeRect);
-    if (!rects.length) continue;
+    const nodeRects = [...a.nodeIds, ...(a.elementIds ?? [])].map((id) => byId.get(id)).filter((n): n is CanvasNode => !!n?.position).map(nodeRect);
+    if (!nodeRects.length) continue;
+    const rects = [...nodeRects, ...(inner.get(a.id) ?? []).flatMap((id) => (edgeBoxes[id] ? [edgeBoxes[id]] : []))];
     const x1 = Math.min(...rects.map((r) => r.x));
     const y1 = Math.min(...rects.map((r) => r.y));
     const x2 = Math.max(...rects.map((r) => r.x + r.width));
