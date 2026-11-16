@@ -51,6 +51,8 @@ export interface CanvasActions {
   /** Creates a connected next step after `id` and starts editing it. */
   addNext(id: string): void;
   focusMark(id: number): void;
+  /** Hovering a #N reference opens that mark's note, as hovering the mark itself does (null: hover ended). */
+  hoverMark(id: number | null): void;
   activeMark: number | null;
   markKinds: Record<number, string>;
   /** Elements the agent changed in the last few seconds. */
@@ -79,6 +81,7 @@ export const ActionsContext = createContext<CanvasActions>({
   relabelEdge() {},
   addNext() {},
   focusMark() {},
+  hoverMark() {},
   activeMark: null,
   markKinds: {},
   touched: new Set(),
@@ -90,7 +93,7 @@ export const ActionsContext = createContext<CanvasActions>({
 });
 
 export function MarkBadges({ marks }: { marks: number[] }) {
-  const { focusMark, activeMark, markKinds } = useContext(ActionsContext);
+  const { focusMark, hoverMark, activeMark, markKinds } = useContext(ActionsContext);
   if (!marks.length) return null;
   return (
     <span className="badges">
@@ -98,6 +101,8 @@ export function MarkBadges({ marks }: { marks: number[] }) {
         <button
           key={m}
           className={`badge kind-${markKinds[m] ?? "none"}${activeMark === m ? " active" : ""}`}
+          onMouseEnter={() => hoverMark(m)}
+          onMouseLeave={() => hoverMark(null)}
           onClick={(e) => {
             e.stopPropagation();
             focusMark(m);

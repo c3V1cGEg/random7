@@ -921,6 +921,7 @@ function Canvas() {
       relabelEdge: (id, label) => void send([{ op: "update_edge", id, label: label || null }]),
       addNext,
       focusMark: focusMarkById,
+      hoverMark: setHoverMark,
       activeMark: hoverMark ?? activeMark,
       markKinds: Object.fromEntries((state?.annotations ?? []).map((a) => [a.id, a.kind ?? "none"])),
       touched,
