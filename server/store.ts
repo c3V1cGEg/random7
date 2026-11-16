@@ -373,6 +373,16 @@ export class CanvasStore {
     return toMermaid({ direction: m.direction, nodes: [...m.nodes.values()], edges: [...m.edges.values()] });
   }
 
+  /** One mark as it is now (undefined once deleted). */
+  annotation(id: number): Annotation | undefined {
+    return this.model.annotations.get(id);
+  }
+
+  /** Ids of marks that have text or replies (what change notifications treat as written). */
+  writtenMarks(): number[] {
+    return this.annotationList().filter((a) => a.text || a.replies?.length).map((a) => a.id);
+  }
+
   private annotationList(): Annotation[] {
     return [...this.model.annotations.values()].sort((a, b) => a.id - b.id);
   }

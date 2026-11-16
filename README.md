@@ -76,9 +76,12 @@ marks, and reads the change with the usual tools. Channels are a Claude Code **r
 they need a claude.ai login or Console API key; on Team/Enterprise an Owner must enable them.
 
 **What notifies:** committed edits you make in the browser that agents can see: nodes, participants,
-messages, fragments, labels, edges, statuses, accepting changes, undo/redo, clearing, and marks
-(adding, editing, deleting, replying). **What does not:** moving, resizing, re-anchoring arrows,
-zoom/pan, selection, and anything an agent changed itself. Edits within ~2 s of each other become one
+messages, fragments, labels, edges, statuses, accepting changes, undo/redo, and marks once they
+have text (saving a note, editing it, replying, deleting a written mark). **What does not:** a mark
+still being written (pressing M, picking its kind: it counts when you save its note), clearing a
+canvas, moving, resizing, re-anchoring arrows, zoom/pan, selection, and anything an agent changed
+itself. The agent is told to act only on marks waiting for its answer; plain diagram edits are
+taken as your current view, not as a request. Edits within ~2 s of each other become one
 notification (at most 10 s late), naming the session, the revision range, the categories (`mermaid`,
 `annotations`) and the touched ids, never your text:
 
