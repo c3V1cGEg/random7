@@ -1378,6 +1378,9 @@ function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number
   return <div className="context-hint">{hint}</div>;
 }
 
+const CHANNEL_REGISTER = "npm run channel:register";
+const CHANNEL_START = "claude --dangerously-load-development-channels server:visual-canvas-channel";
+
 function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, what: string) => void; sequence: boolean; onSwitch: () => void }) {
   const cmd = `claude mcp add --transport http --scope user visual-canvas ${location.origin}/mcp`;
   const prompt = sequence
@@ -1412,6 +1415,27 @@ function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, wha
           </li>
           <li>
             <span>Then edit, select and press <kbd>M</kbd> to mark — the agent sees each mark as #N.</span>
+          </li>
+          <li>
+            <details className="channel-setup">
+              <summary>Optional: let a running Claude Code session react to your marks by itself</summary>
+              <span>
+                Register the channel bridge once (in the canvas repo; inside WSL it prints the command to run where Claude Code runs):
+              </span>
+              <button className="copyline" onClick={() => onCopy(CHANNEL_REGISTER, "Command")} title="Copy">
+                <code>{CHANNEL_REGISTER}</code> <span>⧉</span>
+              </button>
+              <span>Then start Claude Code with the channel enabled:</span>
+              <button className="copyline" onClick={() => onCopy(CHANNEL_START, "Command")} title="Copy">
+                <code>{CHANNEL_START}</code> <span>⧉</span>
+              </button>
+              <span className="muted">
+                Channels are a Claude Code research preview. A self-built channel like this one can only be loaded with this development flag, which
+                shows a warning screen at every start (choose <i>I am using this for local development</i>). The no-warning{" "}
+                <code>--channels</code> option only takes approved plugins. Plain <code>claude</code> keeps working, just without the automatic
+                notices. Needs a claude.ai login or Console API key; on Team/Enterprise an Owner must enable Channels.
+              </span>
+            </details>
           </li>
         </ol>
         <p className="muted">
