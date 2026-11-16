@@ -99,7 +99,9 @@ Touched: n3, e2, #4. Read it with canvas_get_changes {session: "checkout", since
 npm run channel:register
 # (inside this repo, .mcp.json already registers it; approve "New MCP server found" on first start)
 # Canvas in WSL, Claude Code on Windows: run it in WSL; it prints the `claude mcp add … wsl.exe …`
-# command to run in PowerShell, so Windows Claude Code starts the bridge inside WSL
+# command to run in PowerShell, so Windows Claude Code starts the bridge inside WSL.
+# The empty-canvas card ("Start a visual discussion", step 5) shows the same commands, worked out
+# by the server for where it runs (Windows, WSL, Linux, macOS), ready to copy.
 
 # start Claude Code with the channel enabled (in the project you are discussing)
 claude --dangerously-load-development-channels server:visual-canvas-channel

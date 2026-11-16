@@ -1378,8 +1378,51 @@ function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number
   return <div className="context-hint">{hint}</div>;
 }
 
-const CHANNEL_REGISTER = "npm run channel:register";
-const CHANNEL_START = "claude --dangerously-load-development-channels server:visual-canvas-channel";
+interface ChannelSetupInfo {
+  setups: Array<{ where: string; command: string }>;
+  start: string;
+}
+
+/**
+ * Optional setup for live notifications. The server works out the register command for where it
+ * runs (Windows, WSL, Linux, macOS; its folder and node binary), so it can be copied as is.
+ */
+function ChannelSetup({ onCopy }: { onCopy: (text: string, what: string) => void }) {
+  const [info, setInfo] = useState<ChannelSetupInfo | null>(null);
+  const load = () => {
+    if (!info) fetch("/api/channel-setup").then((r) => r.json()).then(setInfo, () => undefined);
+  };
+  const copyLine = (text: string) => (
+    <button className="copyline" onClick={() => onCopy(text, "Command")} title="Copy">
+      <code>{text}</code> <span>⧉</span>
+    </button>
+  );
+  return (
+    <details className="channel-setup" onToggle={(e) => e.currentTarget.open && load()}>
+      <summary>Optional: let a running Claude Code session react to your marks by itself</summary>
+      <span>Register the channel bridge once, in a terminal where Claude Code runs:</span>
+      {info?.setups.map((s) => (
+        <div key={s.where} className="channel-option">
+          <span className="channel-where">{s.where}</span>
+          {copyLine(s.command)}
+        </div>
+      ))}
+      {!info && <span className="muted">Loading…</span>}
+      <span className="muted">
+        Registered before? Run <code>claude mcp remove visual-canvas-channel --scope user</code> first. Or, in this canvas folder, run{" "}
+        <code>npm run channel:register</code>.
+      </span>
+      <span>Then start Claude Code with the channel enabled:</span>
+      {copyLine(info?.start ?? "claude --dangerously-load-development-channels server:visual-canvas-channel")}
+      <span className="muted">
+        Channels are a Claude Code research preview. A self-built channel like this one can only be loaded with this development flag, which shows a
+        warning screen at every start (choose <i>I am using this for local development</i>). The no-warning <code>--channels</code> option only takes
+        approved plugins. Plain <code>claude</code> keeps working, just without the automatic notices. Needs a claude.ai login or Console API key; on
+        Team/Enterprise an Owner must enable Channels.
+      </span>
+    </details>
+  );
+}
 
 function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, what: string) => void; sequence: boolean; onSwitch: () => void }) {
   const cmd = `claude mcp add --transport http --scope user visual-canvas ${location.origin}/mcp`;
@@ -1417,25 +1460,7 @@ function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, wha
             <span>Then edit, select and press <kbd>M</kbd> to mark — the agent sees each mark as #N.</span>
           </li>
           <li>
-            <details className="channel-setup">
-              <summary>Optional: let a running Claude Code session react to your marks by itself</summary>
-              <span>
-                Register the channel bridge once (in the canvas repo; inside WSL it prints the command to run where Claude Code runs):
-              </span>
-              <button className="copyline" onClick={() => onCopy(CHANNEL_REGISTER, "Command")} title="Copy">
-                <code>{CHANNEL_REGISTER}</code> <span>⧉</span>
-              </button>
-              <span>Then start Claude Code with the channel enabled:</span>
-              <button className="copyline" onClick={() => onCopy(CHANNEL_START, "Command")} title="Copy">
-                <code>{CHANNEL_START}</code> <span>⧉</span>
-              </button>
-              <span className="muted">
-                Channels are a Claude Code research preview. A self-built channel like this one can only be loaded with this development flag, which
-                shows a warning screen at every start (choose <i>I am using this for local development</i>). The no-warning{" "}
-                <code>--channels</code> option only takes approved plugins. Plain <code>claude</code> keeps working, just without the automatic
-                notices. Needs a claude.ai login or Console API key; on Team/Enterprise an Owner must enable Channels.
-              </span>
-            </details>
+            <ChannelSetup onCopy={onCopy} />
           </li>
         </ol>
         <p className="muted">

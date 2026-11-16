@@ -40,20 +40,23 @@ if (distro) {
   console.log(`  claude mcp add --scope user ${NAME} -- ${viaWsl.map(quote).join(" ")}\n`);
   if (windowsPath) {
     console.log("Or, if Node.js is installed on Windows, run the bridge there:");
-    console.log(`  claude mcp add --scope user ${url ? `-e CANVAS_URL=${url} ` : ""}${NAME} -- node ${quote(windowsPath)}\n`);
+    console.log(`  claude mcp add --scope user ${NAME}${url ? ` -e CANVAS_URL=${url}` : ""} -- node ${quote(windowsPath)}\n`);
   }
   console.log("Claude Code inside WSL: run this script with --here to register directly.\n");
   console.log(`Then start Claude Code with:\n  claude --dangerously-load-development-channels server:${NAME}`);
   if (!process.argv.includes("--here")) process.exit(0);
 }
 
+// On Windows the claude CLI may be a .cmd shim, which needs a shell; quote paths such as C:\Program Files\….
 const shell = process.platform === "win32";
-spawnSync("claude", ["mcp", "remove", NAME, "--scope", "user"], { stdio: "ignore", shell }); // may not exist yet
+const claude = (args, stdio) => spawnSync("claude", shell ? args.map(quote) : args, { stdio, shell });
+claude(["mcp", "remove", NAME, "--scope", "user"], "ignore"); // may not exist yet
+// -e after the name: it takes several values, up to the `--`.
 const env = url ? ["-e", `CANVAS_URL=${url}`] : [];
-const res = spawnSync("claude", ["mcp", "add", "--scope", "user", ...env, NAME, "--", process.execPath, bridge], { stdio: "inherit", shell });
+const res = claude(["mcp", "add", "--scope", "user", NAME, ...env, "--", process.execPath, bridge], "inherit");
 if (res.error) {
   console.error(`Could not run the claude CLI (${res.error.message}). Register it yourself:`);
-  console.error(`  claude mcp add --scope user ${NAME} -- ${quote(process.execPath)} ${quote(bridge)}`);
+  console.error(`  claude mcp add --scope user ${NAME}${url ? ` -e CANVAS_URL=${url}` : ""} -- ${quote(process.execPath)} ${quote(bridge)}`);
   process.exit(1);
 }
 if (res.status === 0) console.log(`\nRegistered. Start Claude Code with:\n  claude --dangerously-load-development-channels server:${NAME}`);

@@ -212,6 +212,16 @@ test("sequence diagram edits notify; canvas_channel_watch limits sessions", asyn
   await channel.callTool({ name: "canvas_channel_watch", arguments: { sessions: ["*"] } });
 });
 
+test("the setup card gets a register command for where the server runs", async () => {
+  const info = (await (await fetch(`${BASE}/api/channel-setup`)).json()) as { setups: Array<{ command: string }>; start: string };
+  assert.ok(info.setups.length >= 1);
+  for (const { command } of info.setups) {
+    assert.match(command, /^claude mcp add --scope user visual-canvas-channel .*-- .*channel\.mjs"?$/);
+    assert.match(command, new RegExp(`CANVAS_URL=http://127.0.0.1:${PORT}`), "a non-default port is passed on");
+  }
+  assert.equal(info.start, "claude --dangerously-load-development-channels server:visual-canvas-channel");
+});
+
 test("the event stream refuses other web origins", async () => {
   const res = await fetch(`${BASE}/api/events`, { headers: { origin: "https://evil.example" } });
   assert.equal(res.status, 403);
