@@ -97,7 +97,7 @@ export function capabilities(agent?: string) {
     text: "#59; for ;, #35; for #, <br> for a line break.",
   },
   operations: {
-    add_node: "{id?, label, shape?, status?}",
+    add_node: "{id?, label, shape?, status?} — label: title line, then detail lines each after the JSON escape \\n (never <br> in JSON)",
     update_node: "{id, label?, shape?, status?|null}",
     remove_node: "{id} — also removes incident edges",
     add_edge: "{id?, from, to, label?, status?}",

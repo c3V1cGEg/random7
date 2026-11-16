@@ -122,6 +122,7 @@ Rules:
 9. Layout belongs to the user's editor. You never send coordinates, colors or sizes.
 10. Do not expose hexagonal-architecture internals (ports, adapters, classes) by default.
 11. Small changes inside an existing step go into that step as detail lines (a line break: `\n` in patches, `<br>` in Mermaid), prefixed `+ ` added, `- ` dropped, `~ ` modified. Use a new node only for a step of its own (a decision, a failure path, another actor).
+12. **Line breaks: `\n` in JSON, `<br>` only in Mermaid text.** In `canvas_apply_patch` (and every other JSON field: labels, participant names, messages, notes, fragment conditions) write a line break as the JSON escape `\n`, e.g. `{"op":"update_node","id":"n2","label":"Save record\n+ write audit log row per save\n- send email"}`. Never put `<br>` (or `<br/>`) in JSON: the first line is the box's title and the following lines render as its detail list, and a literal `<br>` collapses that into one run-on line. `<br>` is only for diagram text passed to `canvas_replace_diagram`.
 
 Example at `medium` detail:
 

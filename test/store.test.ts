@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseMermaid, toMermaid } from "../server/mermaid.ts";
+import { OperationSchema } from "../server/ops.ts";
 import { CanvasStore } from "../server/store.ts";
 import { CanvasError } from "../server/types.ts";
 
@@ -286,6 +287,13 @@ test("change statuses and detail lines parse, round-trip and survive replace", (
   assert.equal(code(() => parseMermaid('flowchart TD\n a["A"]:::fancy')), "mermaid_syntax");
   assert.equal(code(() => parseMermaid("flowchart TD\n a\n class zz new")), "mermaid_syntax");
   assert.equal(code(() => parseMermaid(`flowchart TD\n a["${Array(10).fill("x").join("<br>")}"]`)), "mermaid_syntax");
+});
+
+test("<br> in JSON labels becomes a line break", () => {
+  const op = OperationSchema.parse({ op: "add_node", label: "Save record<br>+ audit row<BR/>- email" });
+  assert.equal(op.op === "add_node" && op.label, "Save record\n+ audit row\n- email");
+  const msg = OperationSchema.parse({ op: "add_message", from: "A", to: "B", text: "Lock<br />retry" });
+  assert.equal(msg.op === "add_message" && msg.text, "Lock\nretry");
 });
 
 test("status patches, accept_changes and undo", () => {

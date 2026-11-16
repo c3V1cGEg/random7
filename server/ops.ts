@@ -6,7 +6,9 @@ import { FRAGMENT_KINDS, NOTE_PLACEMENTS, SEQ_ARROWS } from "./sequence.ts";
 import { ANNOTATION_KINDS, CHANGE_STATUSES, DIAGRAM_TYPES, LIMITS, NODE_SHAPES } from "./types.ts";
 
 const id = z.string().min(1).max(64);
-const label = z.string().max(LIMITS.labelLength);
+/** Mermaid-style `<br>` sent inside JSON would show up literally; it means a line break, so store `\n`. */
+const lineBreaks = (s: string) => s.replace(/<br\s*\/?>/gi, "\n");
+const label = z.string().max(LIMITS.labelLength).overwrite(lineBreaks);
 const shape = z.enum(NODE_SHAPES as [string, ...string[]]);
 const kind = z.enum(ANNOTATION_KINDS);
 const text = z.string().max(LIMITS.textLength);
@@ -14,7 +16,7 @@ const ids = z.array(id).max(LIMITS.nodes + LIMITS.edges);
 const status = z.enum(CHANGE_STATUSES).describe("Proposal status: new | changed | removed (omit for existing, unchanged)");
 const statusUpdate = z.enum(CHANGE_STATUSES).nullable().optional().describe("new | changed | removed; null clears it (existing)");
 
-const seqText = z.string().max(LIMITS.labelLength).describe("Text; \\n for a line break");
+const seqText = z.string().max(LIMITS.labelLength).overwrite(lineBreaks).describe("Text; \\n for a line break");
 const position = z
   .object({
     after: id.optional(),
