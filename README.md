@@ -1,8 +1,10 @@
 # Visual Agent Canvas — POC
 
 A shared, live flowchart canvas. You edit it in the browser; an MCP coding agent reads and edits the
-same canvas through MCP tools. One local Node.js process serves both. See
-`../visual_agent_canvas_mcp_prototype_spec.md` for the full spec.
+same canvas through MCP tools. One local Node.js process serves both. The plans in `plans/` are
+numbered in the order they were built: [001 prototype spec](plans/001_visual_agent_canvas_mcp_prototype_spec.md),
+[002 sequence diagrams](plans/002_sequence_diagram_canvas_extension_requirements.md),
+[003 skill tool](plans/003_visual_canvas_mcp_skill_extension.md).
 
 ## Run
 
