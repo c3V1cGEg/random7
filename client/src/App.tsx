@@ -32,7 +32,6 @@ import {
   postHistory,
   postLayout,
   postPatch,
-  postReset,
   type AgentInfo,
   type SessionSummary,
   type BrowserState,
@@ -54,7 +53,6 @@ import type { SequenceLayout } from "./sequenceLayout.ts";
 import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
 import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
-import { SessionTabs } from "./SessionTabs.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
 
 const TOUCH_HIGHLIGHT_MS = 4000;
@@ -84,15 +82,22 @@ const place = (n: CanvasNode, p: XY | undefined): CanvasNode =>
 const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a, gap = 20) =>
   a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
 
-export default function App() {
+interface AppProps {
+  /** Receives the server's session list whenever it changes (the tab strip lives outside the canvas). */
+  onSessions: (sessions: SessionSummary[]) => void;
+  /** Shown inside one half of a split view: compact top bar with the session name and a close button. */
+  onClosePane?: () => void;
+}
+
+export default function App(props: AppProps) {
   return (
     <ReactFlowProvider>
-      <Canvas />
+      <Canvas {...props} />
     </ReactFlowProvider>
   );
 }
 
-function Canvas() {
+function Canvas({ onSessions, onClosePane }: AppProps) {
   const rf = useReactFlow<CanvasNode, CanvasEdge>();
   const [state, setState] = useState<BrowserState | null>(null);
   const stateRef = useRef<BrowserState | null>(null);
@@ -132,7 +137,6 @@ function Canvas() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [sessionList, setSessionList] = useState<SessionSummary[]>([]);
   const [missingSession, setMissingSession] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -303,7 +307,7 @@ function Canvas() {
       receiveState(m.state, m.event);
     } else if (m.type === "layout") receiveLayout(m.positions, m.anchors);
     else if (m.type === "agents") setAgents(m.agents);
-    else if (m.type === "sessions") setSessionList(m.sessions);
+    else if (m.type === "sessions") onSessions(m.sessions);
     else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
   };
   useEffect(() => connectSocket((m) => onSocketMessage.current(m), setConnected), []);
@@ -828,11 +832,6 @@ function Canvas() {
     await send([{ op: "set_direction", direction: s.direction === "TD" ? "LR" : "TD" }]);
   }, [send]);
 
-  const clearCanvas = useCallback(async () => {
-    if (confirm(`Clear session "${SESSION}"? Its diagram and all marks are discarded and mark numbering restarts at #1.`)) {
-      await postReset();
-    }
-  }, []);
 
   // --- keyboard ----------------------------------------------------------------
 
@@ -973,7 +972,16 @@ function Canvas() {
     <ActionsContext.Provider value={actions}>
       <div className="app">
         <header className="topbar">
-          <strong className="title">Visual Agent Canvas</strong>
+          {onClosePane ? (
+            <span className="pane-title">
+              <strong title={state?.title}>{SESSION}</strong>
+              <button className="icon" onClick={onClosePane} title="Close this side of the split view">
+                ✕
+              </button>
+            </span>
+          ) : (
+            <strong className="title">Visual Agent Canvas</strong>
+          )}
           <span className={`status ${connected ? "on" : "off"}`} title={`Revision ${state?.revision ?? "–"} · saved on the server`}>
             {connected ? "● live" : "○ reconnecting…"}
           </span>
@@ -1047,7 +1055,6 @@ function Canvas() {
             </button>
           </div>
         </header>
-        <SessionTabs sessions={sessionList} onClear={clearCanvas} onError={showToast} />
 
         <div className="main">
           <div

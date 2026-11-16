@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import {
-  SESSION,
-  SessionExistsError,
-  createSession,
-  deleteSession,
-  exportUrl,
-  importSession,
-  sessionUrl,
-  type SessionSummary,
-} from "./api.ts";
+import { SessionExistsError, createSession, exportUrl, importSession, sessionUrl, type SessionSummary } from "./api.ts";
 
 const ago = (iso: string) => {
   const secs = Math.round((Date.now() - Date.parse(iso)) / 1000);
@@ -20,54 +11,74 @@ const ago = (iso: string) => {
 
 const slug = (s: string) => s.trim().toLowerCase().replace(/\s+/g, "-");
 
-/** Closes a popover on Escape or a click outside `ref`. */
+/** Closes a popover on Escape, a click outside `ref`, or a click into a split-view pane (window blur). */
 function useDismiss(open: boolean, ref: RefObject<HTMLElement | null>, close: () => void) {
   useEffect(() => {
     if (!open) return;
-    const onEvent = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) close();
+    const onEvent = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : e.type === "blur" || !ref.current?.contains(e.target as Node)) close();
     };
     window.addEventListener("mousedown", onEvent);
     window.addEventListener("keydown", onEvent);
+    window.addEventListener("blur", onEvent);
     return () => {
       window.removeEventListener("mousedown", onEvent);
       window.removeEventListener("keydown", onEvent);
+      window.removeEventListener("blur", onEvent);
     };
   }, [open, ref, close]);
 }
 
-/** Popovers are fixed-positioned under their button, so the scrolling tab strip cannot clip them. */
-const below = (el: HTMLElement | null, align: "left" | "right") => {
+/** Popovers are fixed-positioned, so the scrolling tab strip cannot clip them. */
+const below = (el: HTMLElement | null) => {
   const r = el?.getBoundingClientRect();
-  if (!r) return {};
-  return align === "left" ? { top: r.bottom + 4, left: r.left } : { top: r.bottom + 4, right: window.innerWidth - r.right };
+  return r ? { top: r.bottom + 4, right: window.innerWidth - r.right } : {};
 };
 
-/** One tab per canvas session; the current one has a ⋯ menu (export, import, clear, delete). */
+export interface TabActions {
+  /** Show a session (in split view: in the side the user worked in last). */
+  open: (name: string) => void;
+  split: (name: string, side: "left" | "right") => void;
+  /** Leave split view, showing only this session. */
+  alone: (name: string) => void;
+  clear: (name: string) => void;
+  remove: (name: string) => void;
+  error: (msg: string) => void;
+}
+
+/**
+ * One tab per canvas session. Right-click a tab for split view, export / import, clear and delete.
+ * `shown` are the sessions on screen (two in split view: left, right).
+ */
 export function SessionTabs({
   sessions,
-  onClear,
-  onError,
+  shown,
+  active,
+  actions,
+  newRequest,
 }: {
   sessions: SessionSummary[];
-  onClear: () => void;
-  onError: (msg: string) => void;
+  shown: string[];
+  active: string;
+  actions: TabActions;
+  /** Bumped to open the new-session form from a keyboard shortcut pressed inside a split-view pane. */
+  newRequest: number;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<{ name: string; x: number; y: number } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState<"flowchart" | "sequence">("flowchart");
   const menuRef = useRef<HTMLDivElement>(null);
-  const menuButton = useRef<HTMLButtonElement>(null);
   const newRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const strip = useRef<HTMLDivElement>(null);
-  useDismiss(menuOpen, menuRef, () => setMenuOpen(false));
+  useDismiss(!!menu, menuRef, () => setMenu(null));
   useDismiss(newOpen, newRef, () => setNewOpen(false));
+  const split = shown.length > 1;
 
   // Stable order (the server lists by last update, which would make tabs jump around).
   const tabs = [...sessions].sort((a, b) => a.name.localeCompare(b.name));
-  if (!tabs.some((s) => s.name === SESSION)) tabs.push({ name: SESSION } as SessionSummary);
+  for (const s of shown) if (!tabs.some((t) => t.name === s)) tabs.push({ name: s } as SessionSummary);
 
   // Ctrl/Cmd+N opens the new-session form where the browser lets the page have it (most keep it for
   // "new window"), so Alt/Option+N does the same everywhere.
@@ -78,12 +89,18 @@ export function SessionTabs({
       const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select, [contenteditable=true]");
       if (!(mod && !e.altKey) && !(e.altKey && !mod && !typing)) return;
       e.preventDefault();
-      setMenuOpen(false);
+      setMenu(null);
       setNewOpen(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!newRequest) return;
+    setMenu(null);
+    setNewOpen(true);
+  }, [newRequest]);
 
   // Keep the current tab in view when there are more tabs than fit.
   useEffect(() => {
@@ -95,9 +112,11 @@ export function SessionTabs({
     if (!n) return;
     try {
       await createSession(n, type);
-      location.href = sessionUrl(n);
+      setNewOpen(false);
+      setName("");
+      actions.open(n);
     } catch (err) {
-      onError((err as Error).message);
+      actions.error((err as Error).message);
     }
   };
 
@@ -108,10 +127,10 @@ export function SessionTabs({
     for (;;) {
       try {
         const created = await importSession(text, name);
-        location.href = sessionUrl(created.name);
+        actions.open(created.name);
         return;
       } catch (err) {
-        if (!(err instanceof SessionExistsError)) return onError((err as Error).message);
+        if (!(err instanceof SessionExistsError)) return actions.error((err as Error).message);
         const next = prompt(`A session named "${err.name}" already exists. Import it as:`, `${err.name}-imported`);
         if (!next?.trim()) return;
         name = slug(next);
@@ -119,45 +138,46 @@ export function SessionTabs({
     }
   };
 
-  const remove = async () => {
-    setMenuOpen(false);
-    if (!confirm(`Delete session "${SESSION}" with its diagram and marks? This cannot be undone.`)) return;
-    try {
-      await deleteSession(SESSION);
-      location.href = sessionUrl("default");
-    } catch (err) {
-      onError((err as Error).message);
-    }
+  /** Runs a menu item and closes the menu. */
+  const pick = (fn: () => void) => () => {
+    setMenu(null);
+    fn();
   };
+
+  // Splitting needs a second session: the one on screen, or (in split view) the other side.
+  const canSplit = (target: string) => split || target !== shown[0];
 
   return (
     <nav className="session-tabs">
       <div className="session-strip" ref={strip}>
         {tabs.map((s) => {
-          const current = s.name === SESSION;
+          const current = shown.includes(s.name);
+          const side = split && current ? (s.name === shown[0] ? "left" : "right") : null;
           const info =
             s.updatedAt &&
             `${s.type === "sequence" ? "Sequence diagram" : "Flowchart"} · ${s.nodes} ${s.type === "sequence" ? "elements" : "nodes"} · ${s.marks} marks · updated ${ago(s.updatedAt)}`;
           return (
-            <div key={s.name} className={`session-tab${current ? " current" : ""}`} title={[s.title, info].filter(Boolean).join("\n")}>
-              <a href={sessionUrl(s.name)} onClick={(e) => current && e.preventDefault()}>
-                <span className="session-type">{s.type === "sequence" ? "⇄" : "▭"}</span>
-                {s.name}
-                {s.marks > 0 && <span className="session-marks">{s.marks}</span>}
-              </a>
-              {current && (
-                <button
-                  ref={menuButton}
-                  className="session-more"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => setMenuOpen((o) => !o)}
-                  title="Export, import, clear or delete"
-                  aria-label="Session actions"
-                >
-                  ⋯
-                </button>
-              )}
-            </div>
+            <a
+              key={s.name}
+              href={sessionUrl(s.name)}
+              className={`session-tab${current ? " current" : ""}${split && s.name === active ? " active" : ""}${menu?.name === s.name ? " menu-open" : ""}`}
+              title={[s.title, info, "Right-click: split view, export, import, clear, delete"].filter(Boolean).join("\n")}
+              onClick={(e) => {
+                if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return; // new browser tab/window
+                e.preventDefault();
+                actions.open(s.name);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setNewOpen(false);
+                setMenu({ name: s.name, x: e.clientX, y: e.clientY });
+              }}
+            >
+              <span className="session-type">{s.type === "sequence" ? "⇄" : "▭"}</span>
+              <span className="session-name">{s.name}</span>
+              {s.marks > 0 && <span className="session-marks">{s.marks}</span>}
+              {side && <span className="session-side" title={`Shown on the ${side}`}>{side === "left" ? "◧" : "◨"}</span>}
+            </a>
           );
         })}
       </div>
@@ -168,7 +188,7 @@ export function SessionTabs({
         {newOpen && (
           <form
             className="session-pop session-new"
-            style={below(newRef.current, "right")}
+            style={below(newRef.current)}
             onSubmit={(e) => {
               e.preventDefault();
               void create();
@@ -185,38 +205,53 @@ export function SessionTabs({
           </form>
         )}
       </div>
-      {menuOpen && (
-        <div className="session-pop session-actions-menu" ref={menuRef} style={below(menuButton.current, "left")}>
-          <a className="menu-item" href={exportUrl(SESSION)} download onClick={() => setMenuOpen(false)} title="Download this canvas as a file you can import later">
-            ⤓ Export this canvas
-          </a>
+      {menu && (
+        <div
+          className="session-pop session-actions-menu"
+          ref={menuRef}
+          style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 330) }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="menu-head">{menu.name}</div>
           <button
             className="menu-item"
-            onClick={() => {
-              setMenuOpen(false);
-              fileInput.current?.click();
-            }}
-            title="Add a canvas from an exported file as a new session"
+            disabled={!canSplit(menu.name)}
+            onClick={pick(() => actions.split(menu.name, "right"))}
+            title={canSplit(menu.name) ? `Show "${menu.name}" on the right, next to the other session` : "Right-click another tab to show it next to this one"}
           >
+            ◨ Split right
+          </button>
+          <button
+            className="menu-item"
+            disabled={!canSplit(menu.name)}
+            onClick={pick(() => actions.split(menu.name, "left"))}
+            title={canSplit(menu.name) ? `Show "${menu.name}" on the left, next to the other session` : "Right-click another tab to show it next to this one"}
+          >
+            ◧ Split left
+          </button>
+          {split && (
+            <button className="menu-item" onClick={pick(() => actions.alone(menu.name))}>
+              ▭ Show only this one
+            </button>
+          )}
+          <hr />
+          <a className="menu-item" href={exportUrl(menu.name)} download onClick={() => setMenu(null)} title="Download this canvas as a file you can import later">
+            ⤓ Export
+          </a>
+          <button className="menu-item" onClick={pick(() => fileInput.current?.click())} title="Add a canvas from an exported file as a new session">
             ⤒ Import from file…
           </button>
           <hr />
-          <button
-            className="menu-item"
-            onClick={() => {
-              setMenuOpen(false);
-              onClear();
-            }}
-          >
-            ⌫ Clear this canvas
+          <button className="menu-item" onClick={pick(() => actions.clear(menu.name))}>
+            ⌫ Clear canvas
           </button>
-          {SESSION !== "default" && (
-            <button className="menu-item danger" onClick={remove}>
+          {menu.name !== "default" && (
+            <button className="menu-item danger" onClick={pick(() => actions.remove(menu.name))}>
               ✕ Delete session
             </button>
           )}
           <p className="muted">
-            Agents pick a session by name: tell them e.g. <code>use canvas session “{SESSION}”</code>.
+            Agents pick a session by name: tell them e.g. <code>use canvas session “{menu.name}”</code>.
           </p>
         </div>
       )}

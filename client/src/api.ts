@@ -38,7 +38,8 @@ export const postPatch = (expectedRevision: number, operations: Operation[], und
 export const postHistory = (direction: "undo" | "redo") =>
   post<{ revision: number; ops: Array<{ op: string } & Record<string, unknown>> }>(`${base}/${direction}`);
 
-export const postReset = () => post(`${base}/reset`);
+/** Clears a session's diagram and marks (any session, so the tab menu can clear tabs that are not open). */
+export const resetSession = (name: string) => post(`/api/s/${encodeURIComponent(name)}/reset`);
 
 /** Shares node positions with other browsers and saves them with the session (never sent to agents). */
 export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}) =>
@@ -77,6 +78,14 @@ export async function deleteSession(name: string): Promise<void> {
 export const canvasRef = () => (SESSION === "default" ? "the visual canvas" : `the visual canvas (session "${SESSION}")`);
 
 export const sessionUrl = (name: string) => (name === "default" ? "/" : `/s/${encodeURIComponent(name)}`);
+
+const params = new URLSearchParams(location.search);
+/** This page is one half of a split view (an iframe of the page that holds the tabs). */
+export const EMBEDDED = params.has("embed");
+/** Split view: the session shown on the right, next to SESSION on the left (`?right=<name>`). */
+export const SPLIT_RIGHT = EMBEDDED ? null : (params.get("right")?.toLowerCase() || null);
+export const splitUrl = (left: string, right: string) => `${sessionUrl(left)}?right=${encodeURIComponent(right)}`;
+export const embedUrl = (name: string) => `${sessionUrl(name)}?embed=1`;
 
 export interface AgentInfo {
   name: string;

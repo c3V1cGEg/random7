@@ -19,8 +19,12 @@ The server holds any number of **named canvas sessions**. Each one is an indepen
 its own diagram, marks (numbering starts at #1 per session), revisions, undo history and layout.
 
 - **Browser:** `http://127.0.0.1:4317/` opens `default`; `/s/<name>` opens another. Each session is a
-  tab below the top bar; **+ New session** (or Alt+N) creates one, and the current tab's **⋯** menu exports,
-  imports, clears or deletes.
+  tab at the top; **+ New session** (or Alt+N) creates one. Right-click a tab to export, import,
+  clear or delete it, or to show it next to the open one.
+- **Split view:** right-click a tab → **Split right** / **Split left** shows that session beside the
+  current one (`/s/<left>?right=<right>`). Each side is a full canvas with its own toolbar, marks and
+  undo; clicking a tab replaces the side you worked in last, ✕ next to a side's name closes it, and
+  the divider drags (double-click: equal halves).
 - **Agents:** every tool takes an optional `session` argument (default `default`). Tell the agent
   which one to use, e.g. *"…on the visual canvas (session "auth-redesign")"*. **Copy prompt for
   agent** includes the name for you. Agents can also call `canvas_list_sessions`, and
@@ -29,7 +33,7 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
   layout) and reloaded on start. `CANVAS_DATA_DIR=/path` moves the folder; `CANVAS_PERSIST=0` keeps
   everything in memory. Undo history and the change log are not saved; after a restart, agents
   asking for changes are told to re-read the snapshot.
-- **Export / import:** the current tab's **⋯** menu: **Export this canvas** downloads `<name>.canvas.json` (the
+- **Export / import:** a tab's right-click menu: **Export** downloads `<name>.canvas.json` (the
   same format as the saved file), and **Import from file…** adds such a file as a new session. If its
   name is taken, you are asked for another one; an existing session is never overwritten.
 - **Layout** (node positions) belongs to the session: it is shared live between browsers and saved,
