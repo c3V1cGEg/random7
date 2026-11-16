@@ -92,8 +92,8 @@ Touched: n3, e2, #4. Read it with canvas_get_changes {session: "checkout", since
 **Set up** (the canvas server must be running, and `visual-canvas` connected as above):
 
 ```bash
-# in this repo, register the bridge for all projects (absolute paths; run from the repo root)
-claude mcp add --scope user visual-canvas-channel -- node "$PWD/node_modules/tsx/dist/cli.mjs" "$PWD/server/channel.ts"
+# once, in this repo: register the bridge for all projects (absolute paths, incl. your node binary)
+npm run channel:register
 # (inside this repo, .mcp.json already registers it; approve "New MCP server found" on first start)
 
 # start Claude Code with the channel enabled (in the project you are discussing)
@@ -106,6 +106,11 @@ session"* means it is active. `/mcp` shows the bridge; its tool `canvas_channel_
 whether it reaches the canvas server and limits events to some sessions (default: all; or set
 `CANVAS_CHANNEL_SESSIONS=a,b`). Other settings: `CANVAS_URL` (default `http://127.0.0.1:4317`),
 `CANVAS_CHANNEL_QUIET_MS`, `CANVAS_CHANNEL_MAX_WAIT_MS` (pass with `-e` to `claude mcp add`).
+
+If `/mcp` shows the bridge as failed ("Connection closed"), run `claude mcp get visual-canvas-channel`
+and start the listed command yourself: it should log `listening to …/api/events` (or that the canvas
+server is not reachable, retrying) and keep running. An error there is the reason; re-running
+`npm run channel:register` fixes wrong paths or a `node` that Claude Code cannot find.
 
 **Try it:** ask the agent to draw something on a session, then in the browser rename a step or add a
 mark. Within a few seconds the agent gets the event in the same session, without a new prompt, and
