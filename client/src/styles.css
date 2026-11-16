@@ -307,6 +307,10 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .copyline code { flex: 1; word-break: break-all; }
 .copyline:hover { border-color: var(--accent); }
 .empty-card .muted { margin: 14px 0 0; }
+.channel-setup summary { cursor: pointer; }
+.channel-setup[open] summary { margin-bottom: 6px; }
+.channel-setup > span { display: block; margin: 8px 0 4px; }
+.channel-setup > span.muted { font-size: 12px; line-height: 1.45; }
 
 .toast {
   position: absolute; bottom: 52px; left: 50%; transform: translateX(-50%); max-width: 520px; z-index: 10;
