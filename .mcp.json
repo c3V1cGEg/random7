@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "visual-canvas-channel": {
-      "command": "npx",
-      "args": ["tsx", "server/channel.ts"]
+      "command": "node",
+      "args": ["server/channel.mjs"]
     }
   }
 }

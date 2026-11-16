@@ -71,7 +71,7 @@ before(async () => {
   await channel.connect(
     new StdioClientTransport({
       command: process.execPath,
-      args: ["--import", "tsx", "server/channel.ts"],
+      args: ["server/channel.mjs"],
       env: { ...(process.env as Record<string, string>), CANVAS_URL: BASE, CANVAS_CHANNEL_QUIET_MS: String(QUIET_MS) },
       stderr: "ignore",
     }),

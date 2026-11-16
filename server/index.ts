@@ -186,7 +186,7 @@ app.get("/api/sessions", (_req, res) => {
 
 // --- agent-facing change stream (Server-Sent Events) ----------------------------------
 // Committed user changes to the diagram or marks, as compact pointers (never content). The Claude
-// Code channel bridge (server/channel.ts) turns them into notifications for a running session.
+// Code channel bridge (server/channel.mjs) turns them into notifications for a running session.
 // Loopback only, like everything here: the Host check covers DNS rebinding, the Origin check web pages.
 
 const eventStreams = new Set<Response>();

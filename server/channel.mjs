@@ -7,6 +7,11 @@
 //   claude --dangerously-load-development-channels server:visual-canvas-channel
 // Without that flag the server still runs (its tool works) but Claude Code drops the notifications.
 //
+// Plain JavaScript on purpose: no build step or tsx (whose esbuild binary is platform-specific), so
+// the same checkout works when Claude Code runs on another OS than the canvas server (e.g. Windows
+// Claude Code starting it through wsl.exe, or a Windows node reading a WSL-installed node_modules).
+// Event shape: SemanticChange in server/semantic.ts.
+//
 // Env: CANVAS_URL (default http://127.0.0.1:4317), CANVAS_CHANNEL_SESSIONS (comma-separated session
 // names to watch; default all), CANVAS_CHANNEL_QUIET_MS (wait for this long without edits before
 // notifying, default 2000), CANVAS_CHANNEL_MAX_WAIT_MS (notify at the latest after, default 10000).
@@ -14,35 +19,32 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { SemanticCategory, SemanticChange } from "./semantic.ts";
 
 const CANVAS_URL = (process.env.CANVAS_URL ?? "http://127.0.0.1:4317").replace(/\/+$/, "");
 const QUIET_MS = Number(process.env.CANVAS_CHANNEL_QUIET_MS ?? 2000);
 const MAX_WAIT_MS = Number(process.env.CANVAS_CHANNEL_MAX_WAIT_MS ?? 10_000);
 const MAX_IDS = 20;
 
-const log = (msg: string) => process.stderr.write(`[visual-canvas-channel] ${msg}\n`);
+const log = (msg) => process.stderr.write(`[visual-canvas-channel] ${msg}\n`);
 
-/** Sessions to notify about; null = all. */
-let watched: Set<string> | null = parseSessions(process.env.CANVAS_CHANNEL_SESSIONS);
+/** Sessions to notify about; null = all. @type {Set<string> | null} */
+let watched = parseSessions(process.env.CANVAS_CHANNEL_SESSIONS);
 let connected = false;
-let lastError: string | undefined;
+/** @type {string | undefined} */
+let lastError;
 /** Newest revision already notified per session id (a reset gives a session a new id). */
-const notified = new Map<string, number>();
+/** @type {Map<string, number>} */
+const notified = new Map();
 
-interface Pending {
-  session: string;
-  sessionId: string;
-  firstRevision: number;
-  revision: number;
-  categories: Set<SemanticCategory>;
-  ids: Set<string>;
-  quiet?: ReturnType<typeof setTimeout>;
-  deadline: ReturnType<typeof setTimeout>;
-}
-const pending = new Map<string, Pending>();
+/**
+ * A burst of edits in one session not yet notified, by session id.
+ * @type {Map<string, {session: string, sessionId: string, firstRevision: number, revision: number,
+ *   categories: Set<string>, ids: Set<string>, quiet?: ReturnType<typeof setTimeout>, deadline: ReturnType<typeof setTimeout>}>}
+ */
+const pending = new Map();
 
-function parseSessions(value: string | undefined): Set<string> | null {
+/** @param {string | undefined} value @returns {Set<string> | null} */
+function parseSessions(value) {
   const names = (value ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -51,8 +53,8 @@ function parseSessions(value: string | undefined): Set<string> | null {
 }
 
 // Ids end up in text Claude reads; they are user-chosen, so keep only plain identifiers.
-const safeId = (id: string) => /^#?[\w.-]{1,64}$/.test(id);
-const safeName = (name: string) => /^[\w.-]{1,64}$/.test(name);
+const safeId = (id) => /^#?[\w.-]{1,64}$/.test(id);
+const safeName = (name) => /^[\w.-]{1,64}$/.test(name);
 
 const mcp = new Server(
   { name: "visual-canvas-channel", version: "1.0.0" },
@@ -87,8 +89,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name !== "canvas_channel_watch") throw new Error(`unknown tool: ${req.params.name}`);
-  const sessions = (req.params.arguments as { sessions?: unknown } | undefined)?.sessions;
-  if (Array.isArray(sessions)) watched = parseSessions(sessions.filter((s): s is string => typeof s === "string").join(","));
+  const sessions = req.params.arguments?.sessions;
+  if (Array.isArray(sessions)) watched = parseSessions(sessions.filter((s) => typeof s === "string").join(","));
   const status = {
     canvasUrl: CANVAS_URL,
     connectedToCanvas: connected,
@@ -98,7 +100,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text", text: JSON.stringify(status) }] };
 });
 
-function receive(change: SemanticChange) {
+/** @param {import("./semantic.ts").SemanticChange} change */
+function receive(change) {
   if (watched && !watched.has(change.session)) return;
   if ((notified.get(change.sessionId) ?? 0) >= change.revision) return; // already told
   const p = pending.get(change.sessionId);
@@ -110,7 +113,7 @@ function receive(change: SemanticChange) {
     p.quiet = setTimeout(() => void flush(change.sessionId), QUIET_MS);
     return;
   }
-  const entry: Pending = {
+  const entry = {
     session: change.session,
     sessionId: change.sessionId,
     firstRevision: change.revision,
@@ -124,7 +127,8 @@ function receive(change: SemanticChange) {
 }
 
 /** Sends one notification for a burst of edits in one session. */
-async function flush(sessionId: string) {
+/** @param {string} sessionId */
+async function flush(sessionId) {
   const p = pending.get(sessionId);
   if (!p) return;
   pending.delete(sessionId);
@@ -156,7 +160,7 @@ async function flush(sessionId: string) {
     });
   } catch (err) {
     // Written to the transport or not at all; Claude Code never acknowledges either way.
-    log(`could not send a notification: ${(err as Error).message}`);
+    log(`could not send a notification: ${err.message}`);
   }
 }
 
@@ -173,9 +177,9 @@ async function follow() {
       log(`listening to ${CANVAS_URL}/api/events`);
       const decoder = new TextDecoder();
       let buffer = "";
-      for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+      for await (const chunk of res.body) {
         buffer += decoder.decode(chunk, { stream: true });
-        let end: number;
+        let end;
         while ((end = buffer.indexOf("\n\n")) >= 0) {
           const block = buffer.slice(0, end);
           buffer = buffer.slice(end + 2);
@@ -186,7 +190,7 @@ async function follow() {
             .join("\n");
           if (!data) continue;
           try {
-            receive(JSON.parse(data) as SemanticChange);
+            receive(JSON.parse(data));
           } catch {
             log("ignored a malformed event");
           }
@@ -194,7 +198,7 @@ async function follow() {
       }
       throw new Error("stream ended");
     } catch (err) {
-      const msg = (err as Error).message;
+      const msg = err.message;
       if (connected || lastError !== msg) log(`canvas server not reachable at ${CANVAS_URL} (${msg}); retrying`);
       connected = false;
       lastError = msg;

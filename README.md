@@ -95,6 +95,8 @@ Touched: n3, e2, #4. Read it with canvas_get_changes {session: "checkout", since
 # once, in this repo: register the bridge for all projects (absolute paths, incl. your node binary)
 npm run channel:register
 # (inside this repo, .mcp.json already registers it; approve "New MCP server found" on first start)
+# Canvas in WSL, Claude Code on Windows: run it in WSL; it prints the `claude mcp add … wsl.exe …`
+# command to run in PowerShell, so Windows Claude Code starts the bridge inside WSL
 
 # start Claude Code with the channel enabled (in the project you are discussing)
 claude --dangerously-load-development-channels server:visual-canvas-channel
@@ -119,7 +121,7 @@ reads it with `canvas_get_changes`. Moving a box does nothing.
 **How it works:** the canvas server streams committed user changes as Server-Sent Events on
 `GET /api/events` (loopback only; host and origin checked like the rest of the API). It only learns
 of changes at its commit point, which also feeds the change log agents read, so a notification never
-announces something the tools cannot return yet. `server/channel.ts` is a small stdio MCP server that
+announces something the tools cannot return yet. `server/channel.mjs` is a small stdio MCP server (plain JavaScript, no build step) that
 Claude Code starts; it follows that stream, merges bursts, and sends `notifications/claude/channel`.
 The canvas server itself stays a Streamable-HTTP MCP server with its tools unchanged.
 

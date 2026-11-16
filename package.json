@@ -7,7 +7,7 @@
     "start": "vite build --configLoader native && tsx server/index.ts",
     "serve": "tsx server/index.ts",
     "dev": "vite build --configLoader native --watch & tsx watch server/index.ts",
-    "channel": "tsx server/channel.ts",
+    "channel": "node server/channel.mjs",
     "channel:register": "node scripts/register-channel.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"
