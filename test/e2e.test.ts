@@ -160,7 +160,9 @@ test("minimum useful demo round trip", async () => {
 
   const snap = await call("canvas_get_snapshot");
   assert.match(snap.data.diagram, /n4 e5@-->\|"No"\| n7/);
-  assert.deepEqual(snap.data.annotations, [{ id: 2, nodeIds: [], edgeIds: ["e5"], text: "Does rollback leave these eligible?" }]);
+  assert.deepEqual(snap.data.annotations, [
+    { id: 2, nodeIds: [], edgeIds: ["e5"], text: "Does rollback leave these eligible?", by: "user", awaitingReply: true },
+  ]);
   ws.close();
 });
 
@@ -239,6 +241,31 @@ test("layout is shared via the browser API but never shown to agents", async () 
   assert.doesNotMatch(JSON.stringify(snap.data), /layout|"x":120/);
 });
 
+test("edge attachment points are layout: shared, cleared with null, never shown to agents", async () => {
+  const s0 = await call("canvas_get_snapshot", { session: "batch-review" });
+  const r = await call("canvas_apply_patch", {
+    session: "batch-review",
+    expectedRevision: s0.data.revision,
+    operations: [{ op: "add_node", id: "y", label: "Next" }, { op: "add_edge", id: "xy", from: "x", to: "y" }],
+  });
+  assert.equal(r.isError, false, JSON.stringify(r.data));
+  const post = (anchors: unknown) =>
+    fetch(`${BASE}/api/s/batch-review/layout`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: BASE },
+      body: JSON.stringify({ anchors }),
+    });
+  assert.equal((await post({ xy: { from: { side: "right", t: 0.25 }, to: { side: "top", t: 0.8 } }, ghost: { to: { side: "top", t: 0.5 } } })).status, 200);
+  assert.equal((await post({ xy: { from: { side: "middle", t: 0.5 } } })).status, 400);
+  let state = await (await fetch(`${BASE}/api/s/batch-review/state`)).json();
+  assert.deepEqual(state.anchors, { xy: { from: { side: "right", t: 0.25 }, to: { side: "top", t: 0.8 } } });
+  await post({ xy: { from: null } });
+  state = await (await fetch(`${BASE}/api/s/batch-review/state`)).json();
+  assert.deepEqual(state.anchors, { xy: { to: { side: "top", t: 0.8 } } });
+  const snap = await call("canvas_get_snapshot", { session: "batch-review" });
+  assert.doesNotMatch(JSON.stringify(snap.data), /anchors|"side"/);
+});
+
 test("sessions survive a restart, and connected agents keep working", async () => {
   const before = await call("canvas_get_snapshot", { session: "batch-review" });
   await stopServer(server);
@@ -303,6 +330,50 @@ test("a session exports to a file and imports back as a new session", async () =
     assert.equal(res.status, 400, bad);
     assert.equal((await res.json()).error, "invalid_session_file");
   }
+});
+
+test("marks are answered in their own thread, never by rewriting the user's note", async () => {
+  const s0 = await call("canvas_get_snapshot");
+  const made = await userPatch(s0.data.revision, [{ op: "add_annotation", nodeIds: ["exp"], text: "why is this here?" }]);
+  const id = made.data.createdAnnotationIds[0];
+  let snap = await call("canvas_get_snapshot");
+  assert.equal(snap.data.annotations.find((a: { id: number }) => a.id === id).awaitingReply, true);
+
+  const rewrite = await call("canvas_apply_patch", { expectedRevision: snap.data.revision, operations: [{ op: "update_annotation", id, text: "answered" }] });
+  assert.equal(rewrite.data.error, "reply_instead");
+
+  const reply = await call("canvas_apply_patch", {
+    expectedRevision: snap.data.revision,
+    operations: [
+      { op: "update_node", id: "exp", label: "Exported step (kept for the export test)" },
+      { op: "reply_annotation", id, text: "Renamed exp to say why it exists." },
+    ],
+  });
+  assert.equal(reply.isError, false, JSON.stringify(reply.data));
+  snap = await call("canvas_get_snapshot");
+  const mark = snap.data.annotations.find((a: { id: number }) => a.id === id);
+  assert.equal(mark.text, "why is this here?");
+  assert.equal(mark.by, "user");
+  assert.equal(mark.awaitingReply, undefined, "the agent had the last word");
+  assert.deepEqual(
+    mark.replies.map((r: { by: string; agent?: string; text: string }) => [r.by, typeof r.agent, r.text]),
+    [["agent", "string", "Renamed exp to say why it exists."]],
+  );
+
+  const followUp = await userPatch(snap.data.revision, [{ op: "reply_annotation", id, text: "ok, but shorter" }]);
+  assert.equal(followUp.status, 200);
+  snap = await call("canvas_get_snapshot");
+  assert.equal(snap.data.annotations.find((a: { id: number }) => a.id === id).awaitingReply, true, "a user follow-up reopens the thread");
+
+  // The agent's own marks stay editable by the agent, and need no answer from it.
+  const own = await call("canvas_apply_patch", { expectedRevision: snap.data.revision, operations: [{ op: "add_annotation", nodeIds: ["exp"], kind: "question", text: "keep it?" }] });
+  const ownId = own.data.createdAnnotationIds[0];
+  snap = await call("canvas_get_snapshot");
+  const ownMark = snap.data.annotations.find((a: { id: number }) => a.id === ownId);
+  assert.equal(ownMark.by, "agent");
+  assert.equal(ownMark.awaitingReply, undefined);
+  const edit = await call("canvas_apply_patch", { expectedRevision: snap.data.revision, operations: [{ op: "update_annotation", id: ownId, text: "keep it at all?" }] });
+  assert.equal(edit.isError, false);
 });
 
 async function waitFor(pred: () => boolean, ms = 2000) {

@@ -1,7 +1,7 @@
 import type { BrowserState } from "../../server/store.ts";
 import type { SessionSummary } from "../../server/store.ts";
 import type { Operation } from "../../server/ops.ts";
-import type { ChangeEvent, XY } from "../../server/types.ts";
+import type { ChangeEvent, EdgeEnds, EdgeEndsPatch, XY } from "../../server/types.ts";
 
 export type { BrowserState, Operation, ChangeEvent, SessionSummary };
 
@@ -41,7 +41,8 @@ export const postHistory = (direction: "undo" | "redo") =>
 export const postReset = () => post(`${base}/reset`);
 
 /** Shares node positions with other browsers and saves them with the session (never sent to agents). */
-export const postLayout = (positions: Record<string, XY>) => post(`${base}/layout`, { positions, client: CLIENT_ID });
+export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}) =>
+  post(`${base}/layout`, { positions, anchors, client: CLIENT_ID });
 
 export const createSession = (name: string, type: "flowchart" | "sequence" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
 
@@ -85,7 +86,7 @@ export interface AgentInfo {
 
 export type SocketMessage =
   | { type: "state"; state: BrowserState; event?: ChangeEvent }
-  | { type: "layout"; positions: Record<string, XY> }
+  | { type: "layout"; positions: Record<string, XY>; anchors?: Record<string, EdgeEnds> }
   | { type: "agents"; agents: AgentInfo[] }
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "error"; error: string; session: string };
@@ -157,6 +158,8 @@ export function describeOp(op: { op: string } & Record<string, unknown>): string
       return op.reason ? `mark #${op.id} lost deleted targets${op.orphaned ? " (orphaned)" : ""}` : `edited mark #${op.id}`;
     case "remove_annotation":
       return `deleted mark #${op.id}`;
+    case "reply_annotation":
+      return `replied to mark #${op.id}: ${q(op.text)}`;
     case "replace_diagram":
       return op.type === "sequence"
         ? `drew sequence diagram (${op.participants} participants, ${op.items} items)`

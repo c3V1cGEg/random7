@@ -14,7 +14,8 @@ const INSTRUCTIONS = `Visual Agent Canvas: shared, live flowcharts the user is l
 - Small additions inside an existing step belong in that step, not in a new box: add detail lines below its title (a line break: \n in patches, <br> in Mermaid) prefixed "+ " (added), "- " (dropped) or "~ " (modified), and mark the step changed. Example: n2["Save record<br>+ write audit log row per save"]:::changed. Use a separate new node only when the new logic is a step of its own (a decision, a failure path, another actor).
 - Keep diagrams focused (roughly 5-20 nodes). Label uncertain interpretations as such (e.g. annotation kind "uncertain" or "(?)" in the label).
 - Start with canvas_get_snapshot. Use canvas_replace_diagram only for the first drawing or an explicit redraw; prefer small canvas_apply_patch edits afterwards.
-- "Mark #N" / "#N" refers to annotation id N in the snapshot. Resolve it to its nodeIds/edgeIds and text.
+- "Mark #N" / "#N" refers to annotation id N in the snapshot. Resolve it to its nodeIds/edgeIds, text and replies.
+- Answer marks only in their thread: for each mark you handle (awaitingReply: true), make the diagram edits and, in the same patch, add one {"op":"reply_annotation","id":N,"text":"<what you changed, with ids, or the answer>"}. Never rewrite a user's mark text or kind, never answer with a new mark.
 - The user edits the canvas too. Always pass expectedRevision; on revision_conflict, call canvas_get_changes or canvas_get_snapshot and re-plan. Never undo or resurrect the user's edits or deleted marks unless asked.
 - Changing the diagram must not trigger code changes. Wait for the user's instruction.
 - Detail levels (low = business view, medium = technical overview, high = detailed technical behavior) and the full drawing conventions are in the skill returned by ${SKILL_TOOL}; read it before your first drawing in a conversation.`;

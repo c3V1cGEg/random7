@@ -24,6 +24,7 @@ export const LIMITS = {
   nodes: 200,
   edges: 400,
   annotations: 200,
+  repliesPerMark: 50,
   opsPerPatch: 100,
   mermaidLength: 50_000,
   historyEvents: 200,
@@ -63,8 +64,28 @@ export interface Annotation {
   elementIds?: string[];
   kind?: AnnotationKind;
   text?: string;
+  /** Who wrote the mark; marks saved before this field existed are the user's. */
+  by?: ChangeSource;
+  /** Agent name, for marks the agent wrote. */
+  agent?: string;
+  /** The conversation about this mark, oldest first. The mark's own text is never rewritten to answer it. */
+  replies?: Reply[];
   /** True when every target of a previously targeted mark was deleted. */
   orphaned?: boolean;
+}
+
+export interface Reply {
+  by: ChangeSource;
+  /** Agent name, for agent replies. */
+  agent?: string;
+  text: string;
+  at: string;
+}
+
+/** A mark waits for the agent while the user has the last word: their own mark without replies, or a user reply last. */
+export function awaitingAgent(a: Annotation): boolean {
+  const last = a.replies?.at(-1);
+  return last ? last.by === "user" : a.by !== "agent";
 }
 
 export type ChangeSource = "agent" | "user";
@@ -87,6 +108,21 @@ export interface XY {
   w?: number;
   h?: number;
 }
+
+export const SIDES = ["top", "right", "bottom", "left"] as const;
+export type Side = (typeof SIDES)[number];
+/** Where an edge end sits on its node's border: a side, and how far along it (0 = top/left end, 1 = bottom/right end). */
+export interface Anchor {
+  side: Side;
+  t: number;
+}
+/** Editor-only: the attachment points the user chose for an edge (an end without one is placed automatically). */
+export interface EdgeEnds {
+  from?: Anchor;
+  to?: Anchor;
+}
+/** An anchor update: null clears that end (back to automatic). */
+export type EdgeEndsPatch = { from?: Anchor | null; to?: Anchor | null };
 
 export class CanvasError extends Error {
   readonly code: string;

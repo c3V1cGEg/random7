@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { findItem } from "../../server/sequence.ts";
-import { ANNOTATION_KINDS, type Annotation, type AnnotationKind } from "../../server/types.ts";
+import { ANNOTATION_KINDS, awaitingAgent, type Annotation, type AnnotationKind } from "../../server/types.ts";
 import { canvasRef, type BrowserState, type ChangeEvent, type Operation, type OpTarget } from "./api.ts";
 import { KIND_META } from "./kinds.ts";
 
@@ -15,10 +15,12 @@ export interface ActivityItem {
 
 const short = (s: string, n = 26) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
+/** Points the agent at the marks waiting for it; it answers each one in the mark's thread. */
 export function agentPrompt(marks: Annotation[]): string {
-  if (!marks.length) return `Check my changes on ${canvasRef()} and revise the diagram. No code changes yet.`;
-  const refs = marks.map((a) => `#${a.id}`).join(", ");
-  return `Check marks ${refs} on ${canvasRef()} and revise the diagram accordingly. No code changes yet.`;
+  const open = marks.filter(awaitingAgent);
+  if (!open.length) return `Check my changes on ${canvasRef()} and revise the diagram. No code changes yet.`;
+  const refs = open.map((a) => `#${a.id}`).join(", ");
+  return `Handle marks ${refs} on ${canvasRef()}: revise the diagram as they ask and reply in each mark's thread. No code changes yet.`;
 }
 
 export function MarksPanel({
@@ -179,6 +181,7 @@ function MarkCard({
             </option>
           ))}
         </select>
+        <ThreadStatus a={a} />
         <span className="spacer" />
         <button
           className="icon"
@@ -220,10 +223,12 @@ function MarkCard({
           </span>
         ))}
       </div>
+      {a.by === "agent" && <p className="mark-author">{a.agent ?? "Agent"} asks:</p>}
       <textarea
         ref={noteRef}
         value={text}
         rows={1}
+        readOnly={a.by === "agent"}
         placeholder="Add a note for the agent…"
         onClick={(e) => e.stopPropagation()}
         onChange={(e) => setText(e.target.value)}
@@ -242,6 +247,16 @@ function MarkCard({
           }
         }}
       />
+      {!!a.replies?.length && (
+        <ol className="replies">
+          {a.replies.map((r, i) => (
+            <li key={i} className={`reply ${r.by}`}>
+              <span className={`who ${r.by}`}>{r.by === "agent" ? (r.agent ?? "Agent") : "You"}</span> <span className="reply-text">{r.text}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {(active || !!a.replies?.length || a.by === "agent") && <ReplyBox id={a.id} send={send} />}
       {active && (
         <button
           className="link"
@@ -256,6 +271,53 @@ function MarkCard({
         </button>
       )}
     </div>
+  );
+}
+
+/** Who the mark is waiting for: the agent (open), or the user (the agent answered or asked). */
+function ThreadStatus({ a }: { a: Annotation }) {
+  if (awaitingAgent(a)) return a.replies?.length ? <span className="thread-status open">follow-up</span> : null;
+  return a.replies?.length ? (
+    <span className="thread-status answered">↩ answered</span>
+  ) : (
+    <span className="thread-status asks">asks you</span>
+  );
+}
+
+function ReplyBox({ id, send }: { id: number; send: (ops: Operation[]) => Promise<unknown> }) {
+  const [draft, setDraft] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [draft]);
+  const submit = () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    void send([{ op: "reply_annotation", id, text }]);
+  };
+  return (
+    <textarea
+      ref={ref}
+      className="reply-box"
+      value={draft}
+      rows={1}
+      placeholder="Reply… (Enter to send)"
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          submit();
+        } else if (e.key === "Escape") {
+          setDraft("");
+          e.currentTarget.blur();
+        }
+      }}
+    />
   );
 }
 

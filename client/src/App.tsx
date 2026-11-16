@@ -17,7 +17,8 @@ import {
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import type { Annotation, AnnotationKind, ChangeStatus, NodeShape } from "../../server/types.ts";
+import type { Anchor, Annotation, AnnotationKind, ChangeStatus, EdgeEnds, NodeShape } from "../../server/types.ts";
+import { resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
   connectSocket,
@@ -65,7 +66,10 @@ const DEFAULT_LABEL: Record<NodeShape, string> = { action: "New step", decision:
  * The browser's history interleaves semantic steps (undone on the server, which checks that
  * the agent hasn't changed the same things since) with layout-only steps (undone locally).
  */
-type HistoryStep = { kind: "semantic"; group?: string } | { kind: "layout"; before: Record<string, XY>; after: Record<string, XY> };
+type HistoryStep =
+  | { kind: "semantic"; group?: string }
+  | { kind: "layout"; before: Record<string, XY>; after: Record<string, XY> }
+  | { kind: "anchor"; edge: string; end: "from" | "to"; before: Anchor | null; after: Anchor | null };
 
 const allNodeTypes = { ...nodeTypes, ...sequenceNodeTypes };
 
@@ -98,6 +102,11 @@ function Canvas() {
   const positions = useRef<Record<string, XY>>({});
   /** Local positions not yet confirmed by the server, protected from stale server echoes. */
   const unsentLayout = useRef<Record<string, XY>>({});
+  /** Edge attachment points the user placed (editor-only, shared like positions). */
+  const anchors = useRef<Record<string, EdgeEnds>>({});
+  const unsentAnchors = useRef(new Set<string>());
+  /** Bumped when anchors or node positions change, so edge ends are re-spread. */
+  const [edgeVersion, setEdgeVersion] = useState(0);
   const dragging = useRef(new Set<string>());
   const sizes = useRef<Record<string, Size>>({});
   /** One-shot selection to apply on the next rebuild (for elements that arrive with the next server state). */
@@ -191,6 +200,7 @@ function Canvas() {
     if (record) pushStep({ kind: "layout", before, after: laid });
     shareLayout(laid);
     setNodes((nds) => nds.map((n) => place(n, positions.current[n.id])));
+    setEdgeVersion((v) => v + 1);
     setTimeout(() => fit(), 30);
   }, [fit, pushStep, shareLayout, sizeOf]);
 
@@ -219,6 +229,7 @@ function Canvas() {
       const prev = stateRef.current;
       if (!prev || prev.sessionId !== next.sessionId) {
         positions.current = {};
+        anchors.current = {};
         sizes.current = {};
         pendingGroups.current.clear();
         undoSteps.current = [];
@@ -231,6 +242,8 @@ function Canvas() {
       for (const [id, p] of Object.entries(next.layout)) {
         if (!dragging.current.has(id) && !unsentLayout.current[id]) positions.current[id] = p;
       }
+      for (const id of Object.keys(anchors.current)) if (!next.anchors[id] && !unsentAnchors.current.has(id)) delete anchors.current[id];
+      for (const [id, ends] of Object.entries(next.anchors)) if (!unsentAnchors.current.has(id)) anchors.current[id] = ends;
       // Mostly-new graphs (first drawing, agent redraw) get a full layout; small edits keep the user's layout.
       const unplaced = next.nodes.filter((n) => !positions.current[n.id]).map((n) => n.id);
       const relayout = unplaced.length > 1 && unplaced.length > next.nodes.length / 2;
@@ -268,10 +281,16 @@ function Canvas() {
   );
 
   /** Positions moved in another browser (or tab) on the same session. */
-  const receiveLayout = useCallback((map: Record<string, XY>) => {
+  const receiveLayout = useCallback((map: Record<string, XY>, ends: Record<string, EdgeEnds> = {}) => {
     const apply = Object.fromEntries(Object.entries(map).filter(([id]) => !dragging.current.has(id) && !unsentLayout.current[id]));
     Object.assign(positions.current, apply);
+    for (const [id, e] of Object.entries(ends)) {
+      if (unsentAnchors.current.has(id)) continue;
+      if (e.from || e.to) anchors.current[id] = e;
+      else delete anchors.current[id];
+    }
     setNodes((nds) => nds.map((n) => (apply[n.id] ? place(n, apply[n.id]) : n)));
+    setEdgeVersion((v) => v + 1);
   }, []);
 
   // Handlers go through a ref: their identities change once React Flow initialises, and
@@ -281,7 +300,7 @@ function Canvas() {
     if (m.type === "state") {
       setMissingSession(false);
       receiveState(m.state, m.event);
-    } else if (m.type === "layout") receiveLayout(m.positions);
+    } else if (m.type === "layout") receiveLayout(m.positions, m.anchors);
     else if (m.type === "agents") setAgents(m.agents);
     else if (m.type === "sessions") setSessionList(m.sessions);
     else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
@@ -330,6 +349,13 @@ function Canvas() {
         };
       });
     });
+    const center = (id: string) => {
+      const p = positions.current[id];
+      const shape = state.nodes.find((n) => n.id === id)?.shape;
+      const size = sizes.current[id] ?? (shape ? DEFAULT_SIZE[shape] : undefined);
+      return p && size ? { x: p.x + size.width / 2, y: p.y + size.height / 2 } : undefined;
+    };
+    const ends = resolveAnchors(state.edges, state.direction, anchors.current, center);
     setEdges((prev) => {
       const byId = new Map(prev.map((e) => [e.id, e]));
       return state.edges.map((e) => ({
@@ -340,10 +366,10 @@ function Canvas() {
         type: "canvas",
         ...(select ? { selected: select.has(e.id) } : {}),
         markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, ...(e.status ? { color: STATUS_COLOR[e.status] } : {}) },
-        data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status },
+        data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status, direction: state.direction, ...ends[e.id] },
       }));
     });
-  }, [state]);
+  }, [state, edgeVersion]);
 
   useEffect(() => {
     const capture = (e: KeyboardEvent) => {
@@ -425,7 +451,35 @@ function Canvas() {
     Object.assign(positions.current, map);
     shareLayout(map);
     setNodes((nds) => nds.map((n) => (map[n.id] ? place(n, map[n.id]) : n)));
+    setEdgeVersion((v) => v + 1);
   }, [shareLayout]);
+
+  /** Sets (or clears) where one edge end attaches; shared and saved like positions. */
+  const setAnchor = useCallback((edge: string, end: "from" | "to", anchor: Anchor | null) => {
+    const ends: EdgeEnds = { ...anchors.current[edge] };
+    if (anchor) ends[end] = anchor;
+    else delete ends[end];
+    if (ends.from || ends.to) anchors.current[edge] = ends;
+    else delete anchors.current[edge];
+    unsentAnchors.current.add(edge);
+    postLayout({}, { [edge]: { [end]: anchor } })
+      .catch(() => undefined)
+      .finally(() => unsentAnchors.current.delete(edge));
+    setEdgeVersion((v) => v + 1);
+  }, []);
+
+  /** An edge end dropped on a node: reconnect if it is another node, then pin the end where it was dropped. */
+  const moveEdgeEnd = useCallback(
+    (edgeId: string, end: "from" | "to", nodeId: string, anchor: Anchor | null) => {
+      const edge = stateRef.current?.edges.find((e) => e.id === edgeId);
+      if (!edge) return;
+      if (edge[end] !== nodeId) void send([{ op: "update_edge", id: edgeId, [end]: nodeId }]);
+      const before = anchors.current[edgeId]?.[end] ?? null;
+      setAnchor(edgeId, end, anchor);
+      pushStep({ kind: "anchor", edge: edgeId, end, before, after: anchor });
+    },
+    [pushStep, send, setAnchor],
+  );
 
   /** Ctrl+Z / Ctrl+Shift+Z. Runs in the send queue so it never races a pending edit. */
   const travel = useCallback(
@@ -437,6 +491,9 @@ function Canvas() {
         setEditingId(null);
         if (step.kind === "layout") {
           applyPositions(direction === "undo" ? step.before : step.after);
+          to.current.push(step);
+        } else if (step.kind === "anchor") {
+          setAnchor(step.edge, step.end, direction === "undo" ? step.before : step.after);
           to.current.push(step);
         } else {
           try {
@@ -453,7 +510,7 @@ function Canvas() {
       };
       queue.current = queue.current.then(run, run);
     },
-    [applyPositions, showToast],
+    [applyPositions, setAnchor, showToast],
   );
 
   const selectOnly = useCallback((ids: string[]) => {
@@ -553,6 +610,7 @@ function Canvas() {
       if (dragged.some((n) => before[n.id] && (before[n.id].x !== n.position.x || before[n.id].y !== n.position.y))) {
         pushStep({ kind: "layout", before, after });
         shareLayout(after);
+        setEdgeVersion((v) => v + 1);
       }
     },
     [pushStep, shareLayout],
@@ -625,15 +683,6 @@ function Canvas() {
       }
     },
     [autoEdgeLabel, createNode, rf, send, seq],
-  );
-
-  const onReconnect = useCallback(
-    (old: CanvasEdge, c: Connection) => {
-      if (c.source && c.target && (c.source !== old.source || c.target !== old.target)) {
-        void send([{ op: "update_edge", id: old.id, from: c.source, to: c.target }]);
-      }
-    },
-    [send],
   );
 
   const onPaneDoubleClick = useCallback(
@@ -882,9 +931,10 @@ function Canvas() {
       },
       editSequence: seq.editSequence,
       resizeNode,
+      moveEdgeEnd,
       nextMessage: seq.nextMessage,
     }),
-    [activeMark, addNext, editingId, focusMarkById, hoverMark, resizeNode, send, seq, state, touched],
+    [activeMark, addNext, editingId, focusMarkById, hoverMark, moveEdgeEnd, resizeNode, send, seq, state, touched],
   );
 
   const singleEdge = selectedEdges.length === 1 && !selectedNodes.length ? selectedEdges[0] : undefined;
@@ -987,7 +1037,6 @@ function Canvas() {
               onBeforeDelete={onBeforeDelete}
               onConnect={onConnect}
               onConnectEnd={onConnectEnd}
-              onReconnect={onReconnect}
               onNodeDragStart={onNodeDragStart}
               onNodeDragStop={onNodeDragStop}
               onEdgeDoubleClick={(_, e) => setEditingId(e.id)}
@@ -998,7 +1047,7 @@ function Canvas() {
               selectionMode={isSeq ? SelectionMode.Full : SelectionMode.Partial}
               panOnDrag={[1, 2]}
               panOnScroll
-              edgesReconnectable
+              edgesReconnectable={false}
               zoomOnDoubleClick={false}
               minZoom={0.2}
               proOptions={{ hideAttribution: true }}
@@ -1153,6 +1202,7 @@ function MarkRings({
             <span>#{a.id}</span>
             {a.kind && <span className="ring-kind">{KIND_META[a.kind].icon}</span>}
             {a.text && <span className="ring-text">{a.text}</span>}
+            {!!a.replies?.length && <span className="ring-replies" title={`${a.replies.length} replies`}>💬 {a.replies.length}</span>}
           </button>
         </div>
       ))}
@@ -1220,7 +1270,7 @@ function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number
   }
   if (editing) hint = "Enter save · Tab save & add next step · Esc cancel";
   else if (nodes === 1 && !edges) hint = "Enter rename · Tab add next step · M mark · drag a handle to connect · Del delete";
-  else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end to reconnect · Del delete";
+  else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
   else if (nodes || edges) hint = `${nodes + edges} selected · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
   else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · ? shortcuts";

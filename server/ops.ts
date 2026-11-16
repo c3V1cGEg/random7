@@ -165,6 +165,8 @@ export const OperationSchema = z.discriminatedUnion("op", [
     kind: kind.nullable().optional(),
     text: text.nullable().optional(),
   }),
+  z.object({ op: z.literal("reply_annotation"), id: z.number().int().positive(), text: text.min(1) })
+    .describe("Answer mark #id in its own thread (the way to respond to a user's mark; the mark's text stays as written)"),
   z.object({ op: z.literal("remove_annotation"), id: z.number().int().positive() }),
   z.object({ op: z.literal("set_direction"), direction: z.enum(["TD", "LR"]) }),
   ...sequenceOperations(),

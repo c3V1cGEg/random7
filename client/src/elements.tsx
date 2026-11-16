@@ -6,14 +6,18 @@ import {
   Position,
   getBezierPath,
   NodeResizer,
+  useInternalNode,
+  useReactFlow,
   useStore,
+  useStoreApi,
   useUpdateNodeInternals,
   type EdgeProps,
   type Node,
   type NodeProps,
   type Edge,
 } from "@xyflow/react";
-import type { ChangeStatus, Direction, NodeShape } from "../../server/types.ts";
+import type { Anchor, ChangeStatus, Direction, NodeShape, Side } from "../../server/types.ts";
+import { anchorPoint, nearestAnchor, type EndAnchor, type Rect } from "./anchors.ts";
 import { STATUS_META } from "./kinds.ts";
 
 export interface CanvasNodeData extends Record<string, unknown> {
@@ -30,6 +34,10 @@ export interface CanvasEdgeData extends Record<string, unknown> {
   label?: string;
   marks: number[];
   status?: ChangeStatus;
+  direction: Direction;
+  /** Where each end attaches to its node. */
+  from: EndAnchor;
+  to: EndAnchor;
 }
 export type CanvasNode = Node<CanvasNodeData>;
 export type CanvasEdge = Edge<CanvasEdgeData>;
@@ -55,6 +63,8 @@ export interface CanvasActions {
   nextMessage(id: string): void;
   /** Flowcharts: the user finished resizing a node. */
   resizeNode(id: string, r: { x: number; y: number; width: number; height: number }): void;
+  /** Flowcharts: an edge end was dropped on `nodeId` at `anchor` (null: back to automatic placement). */
+  moveEdgeEnd(edgeId: string, end: "from" | "to", nodeId: string, anchor: Anchor | null): void;
 }
 
 export interface TypeAhead {
@@ -76,6 +86,7 @@ export const ActionsContext = createContext<CanvasActions>({
   editSequence() {},
   nextMessage() {},
   resizeNode() {},
+  moveEdgeEnd() {},
 });
 
 export function MarkBadges({ marks }: { marks: number[] }) {
@@ -391,11 +402,35 @@ function detourPath(sx: number, sy: number, tx: number, ty: number, lane: number
   return [`M ${sx},${sy} C ${sx},${sy + 60} ${lane},${sy + 20} ${lane},${sy + 80} L ${lane},${ty - 80} C ${lane},${ty - 20} ${tx},${ty - 60} ${tx},${ty}`, lane, Math.min(sy + 110, (sy + ty) / 2)];
 }
 
+const SIDE_POSITION: Record<Side, Position> = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
+
+function useNodeRect(id: string): { rect: Rect; shape?: NodeShape } | null {
+  const n = useInternalNode<CanvasNode>(id);
+  if (!n?.measured.width || !n.measured.height) return null;
+  const p = n.internals.positionAbsolute;
+  return { rect: { x: p.x, y: p.y, width: n.measured.width, height: n.measured.height }, shape: n.data.shape };
+}
+
 export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<CanvasEdge>) {
-  const { id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected, markerEnd } = props;
-  const { editingId, setEditingId, relabelEdge, touched } = useContext(ActionsContext);
+  const { id, source, target, data, selected, markerEnd } = props;
+  const { editingId, setEditingId, relabelEdge, touched, moveEdgeEnd } = useContext(ActionsContext);
+  const rf = useReactFlow();
+  const store = useStoreApi<CanvasNode, CanvasEdge>();
+  const src = useNodeRect(source);
+  const tgt = useNodeRect(target);
+  // An end being dragged follows the pointer until it is dropped on a node.
+  const [drag, setDrag] = useState<{ end: "from" | "to"; x: number; y: number } | null>(null);
+  const end = (which: "from" | "to", node: typeof src, fx: number, fy: number, fp: Position) => {
+    if (drag?.end === which) return { x: drag.x, y: drag.y, pos: fp };
+    const a = data?.[which];
+    if (!a || !node) return { x: fx, y: fy, pos: fp };
+    return { ...anchorPoint(node.rect, node.shape, a), pos: SIDE_POSITION[a.side] };
+  };
+  const s = end("from", src, props.sourceX, props.sourceY, props.sourcePosition);
+  const t = end("to", tgt, props.targetX, props.targetY, props.targetPosition);
+  const [sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition] = [s.x, s.y, s.pos, t.x, t.y, t.pos];
   const back = isBackEdge(sourceX, sourceY, targetX, targetY, sourcePosition);
-  const lr = sourcePosition === Position.Right;
+  const lr = data?.direction === "LR";
   // Centre of the other nodes across the flow axis; a loop bulges on the side away from them.
   const others = useStore((s) => {
     if (!back) return null;
@@ -442,6 +477,49 @@ export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<Canv
   return (
     <>
       <BaseEdge id={id} path={path} markerEnd={markerEnd} interactionWidth={20} className={cls} />
+      {selected && !editing && (
+        <EdgeLabelRenderer>
+          {(["from", "to"] as const).map((which) => {
+            const at = which === "from" ? s : t;
+            const nodeId = which === "from" ? source : target;
+            const flow = (e: { clientX: number; clientY: number }) => rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+            return (
+              <div
+                key={which}
+                className={`edge-knob nodrag nopan${data?.[which]?.manual ? " manual" : ""}${drag?.end === which ? " dragging" : ""}`}
+                style={{ transform: `translate(-50%, -50%) translate(${at.x}px, ${at.y}px)` }}
+                title="Drag along the border to move this end, or onto another node to reconnect. Double-click: automatic placement"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDrag({ end: which, ...flow(e) });
+                }}
+                onPointerMove={(e) => drag?.end === which && setDrag({ end: which, ...flow(e) })}
+                onPointerUp={(e) => {
+                  if (drag?.end !== which) return;
+                  setDrag(null);
+                  const p = flow(e);
+                  // The node under the drop point (a little slack around its border), smallest first.
+                  let hit: { id: string; rect: Rect } | null = null;
+                  for (const n of store.getState().nodeLookup.values()) {
+                    const w = n.measured.width ?? 0;
+                    const h = n.measured.height ?? 0;
+                    const { x, y } = n.internals.positionAbsolute;
+                    if (p.x < x - 14 || p.x > x + w + 14 || p.y < y - 14 || p.y > y + h + 14) continue;
+                    if (!hit || w * h < hit.rect.width * hit.rect.height) hit = { id: n.id, rect: { x, y, width: w, height: h } };
+                  }
+                  if (hit) moveEdgeEnd(id, which, hit.id, nearestAnchor(hit.rect, p));
+                }}
+                onPointerCancel={() => setDrag(null)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  moveEdgeEnd(id, which, nodeId, null);
+                }}
+              />
+            );
+          })}
+        </EdgeLabelRenderer>
+      )}
       {(data?.label || marks.length > 0 || editing) && (
         <EdgeLabelRenderer>
           <div className="edge-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }}>

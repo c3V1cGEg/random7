@@ -18,7 +18,7 @@ import { TOOL_SPECS, capabilities } from "./tools.ts";
 import { PatchSchema } from "./ops.ts";
 import { DEFAULT_SESSION, SessionManager } from "./sessions.ts";
 import type { CanvasStore } from "./store.ts";
-import { CanvasError } from "./types.ts";
+import { CanvasError, SIDES } from "./types.ts";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.CANVAS_PORT ?? 4317);
@@ -244,8 +244,11 @@ app.post(
   }),
 );
 
+const AnchorSchema = z.object({ side: z.enum(SIDES), t: z.number().min(0).max(1) });
 const LayoutSchema = z.object({
-  positions: z.record(z.string().max(64), z.object({ x: z.number(), y: z.number(), w: z.number().optional(), h: z.number().optional() })),
+  positions: z.record(z.string().max(64), z.object({ x: z.number(), y: z.number(), w: z.number().optional(), h: z.number().optional() })).default({}),
+  /** Edge attachment points by edge id; null puts that end back to automatic. */
+  anchors: z.record(z.string().max(64), z.object({ from: AnchorSchema.nullable().optional(), to: AnchorSchema.nullable().optional() })).default({}),
   client: z.string().max(64).optional(),
 });
 
@@ -257,7 +260,7 @@ app.post(
       res.status(400).json({ error: "invalid_layout", message: parsed.error.message });
       return undefined;
     }
-    store.setLayout(parsed.data.positions, parsed.data.client);
+    store.setLayout(parsed.data.positions, parsed.data.client, parsed.data.anchors);
     return { ok: true };
   }),
 );
@@ -333,7 +336,7 @@ wss.on("connection", (ws: WebSocket) => {
 let listTimer: ReturnType<typeof setTimeout> | undefined;
 sessions.setEvents({
   change: (store, event) => broadcast(store.name, { type: "state", state: store.browserState(), event }),
-  layout: (store, positions, origin) => broadcast(store.name, { type: "layout", positions }, origin),
+  layout: (store, positions, origin, anchors) => broadcast(store.name, { type: "layout", positions, anchors: anchors ?? {} }, origin),
   // The session list (for the switcher) changes on every edit; coalesce those broadcasts.
   listChanged: () => {
     clearTimeout(listTimer);

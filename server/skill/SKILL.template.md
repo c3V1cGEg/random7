@@ -194,11 +194,23 @@ Make the epistemic status visible on the canvas instead of in long chat text:
 
 The canvas carries the logical diagram plus **marks** (annotations). The browser owns all geometry; marks reach you as meaning and references only.
 
-- A mark is `{"id": N, "nodeIds": [...], "edgeIds": [...], "elementIds": [...], "kind"?, "text"?, "orphaned"?}`. Flowcharts use `nodeIds`/`edgeIds`; sequence diagrams use `elementIds` (participant, message, note, activation or block ids). Mark kinds: {{MARK_KINDS}}.
+- A mark is `{"id": N, "nodeIds": [...], "edgeIds": [...], "elementIds": [...], "kind"?, "text"?, "by", "replies"?, "awaitingReply"?, "orphaned"?}`. Flowcharts use `nodeIds`/`edgeIds`; sequence diagrams use `elementIds` (participant, message, note, activation or block ids). Mark kinds: {{MARK_KINDS}}.
 - "#6" or "mark 6" means annotation id 6 in the snapshot. Read its targets and text before acting on it.
 - Numbers start at 1 per session, only increase and are never reused. Never invent or renumber marks.
 - Moving boxes in the browser changes nothing semantic. Labels, connections, shapes, statuses and marks do.
-- Keep the user's marks and texts unless asked to revise or delete them. To answer a mark, edit the diagram and, if useful, update that mark's text, or add your own mark with a kind.
+- Keep the user's marks unless asked to delete them.
+
+### Answering marks: always in the mark's own thread
+
+Every mark is a small conversation: the author's note (`text`), then `replies` (`{by: "user" | "agent", text}`, oldest first). `awaitingReply: true` means the user has the last word and expects your answer. Answer **every** such mark you were asked about, the same way every time:
+
+1. Make the diagram edits the mark asks for, if any.
+2. In the **same** `canvas_apply_patch`, add exactly one `{"op": "reply_annotation", "id": N, "text": "..."}` per answered mark.
+3. Reply text: one to three plain sentences. Start with what you did, naming the ids (`Added n7 "Retry once" after n4.`), or give the answer to a question; if you changed nothing, say why. Put open points in the reply as a question; the user answers in the same thread.
+
+Never answer by rewriting the mark's `text` or `kind` (the server rejects that with `reply_instead` for the user's marks), never answer with a new mark, and never answer only in chat. Read the whole thread before replying: a user reply after yours is a follow-up to that mark.
+
+Create a new mark only for **your own** new point (an uncertainty or a question about something no mark covers), with kind `uncertain` or `question`; the user answers it in its replies.
 - If every target of a mark was deleted it is reported as `orphaned: true`. Mention it; do not silently retarget it.
 
 ## Working with a repository

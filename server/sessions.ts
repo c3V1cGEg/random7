@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CanvasStore, type SessionSummary, type StoredSession } from "./store.ts";
-import { CanvasError, type ChangeEvent, type DiagramType, type XY } from "./types.ts";
+import { CanvasError, type ChangeEvent, type DiagramType, type EdgeEnds, type XY } from "./types.ts";
 
 export const DEFAULT_SESSION = "default";
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,47}$/;
@@ -14,7 +14,7 @@ const SAVE_DELAY_MS = 250;
 
 export interface SessionEvents {
   change(store: CanvasStore, event: ChangeEvent): void;
-  layout(store: CanvasStore, positions: Record<string, XY>, origin?: string): void;
+  layout(store: CanvasStore, positions: Record<string, XY>, origin?: string, anchors?: Record<string, EdgeEnds>): void;
   listChanged(): void;
 }
 
@@ -127,9 +127,9 @@ export class SessionManager {
       this.events?.change(store, event);
       this.events?.listChanged();
     });
-    store.onLayout((positions, origin) => {
+    store.onLayout((positions, origin, anchors) => {
       this.scheduleSave(store);
-      this.events?.layout(store, positions, origin);
+      this.events?.layout(store, positions, origin, anchors);
     });
   }
 

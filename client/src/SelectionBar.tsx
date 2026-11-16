@@ -54,7 +54,8 @@ export function FloatingBar({ allNodes, nodes, edges, children }: { allNodes: Ca
     if (!a || !b) continue;
     const ra = nodeRect(a);
     const rb = nodeRect(b);
-    points.push({ x: (ra.x + ra.width / 2 + rb.x + rb.width / 2) / 2, y: (ra.y + ra.height + rb.y) / 2 });
+    // Above both end nodes, so the bar never covers the edge's draggable ends.
+    points.push({ x: (ra.x + ra.width / 2 + rb.x + rb.width / 2) / 2, y: Math.min(ra.y, rb.y) });
   }
   if (!points.length) return null;
   const minX = Math.min(...points.map((q) => q.x));

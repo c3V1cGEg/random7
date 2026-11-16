@@ -10,6 +10,7 @@ import { SEQUENCE_OPS, acceptSequenceChanges, allocSeqId, applySequenceOp } from
 import {
   CanvasError,
   LIMITS,
+  awaitingAgent,
   type Annotation,
   type ChangeEvent,
   type ChangeOp,
@@ -19,7 +20,11 @@ import {
   type Direction,
   type GraphEdge,
   type GraphNode,
+  type Reply,
   type XY,
+  SIDES,
+  type EdgeEnds,
+  type EdgeEndsPatch,
 } from "./types.ts";
 
 interface Model {
@@ -44,7 +49,8 @@ export interface AgentSnapshot {
   revision: number;
   type: DiagramType;
   diagram: string;
-  annotations: Annotation[];
+  /** awaitingReply: the user has the last word on this mark and expects an answer in its thread. */
+  annotations: Array<Annotation & { awaitingReply?: true }>;
 }
 
 export interface BrowserState {
@@ -63,6 +69,7 @@ export interface BrowserState {
   history: { undo: number; redo: number };
   /** Editor-only node positions (also kept for deleted nodes, so undo restores them in place). */
   layout: Record<string, XY>;
+  anchors: Record<string, EdgeEnds>;
 }
 
 /** On-disk form of a session. Undo history and the change log are intentionally not persisted. */
@@ -88,6 +95,7 @@ export interface StoredSession {
     usedIds: string[];
   };
   layout: Record<string, XY>;
+  anchors?: Record<string, EdgeEnds>;
 }
 
 export interface SessionSummary {
@@ -140,7 +148,7 @@ export interface PatchResult {
 
 export type StoreListener = (event: ChangeEvent) => void;
 /** `origin` identifies the browser that sent the layout change, so it is not echoed back. */
-export type LayoutListener = (positions: Record<string, XY>, origin?: string) => void;
+export type LayoutListener = (positions: Record<string, XY>, origin?: string, anchors?: Record<string, EdgeEnds>) => void;
 
 function emptyModel(type: DiagramType = "flowchart"): Model {
   return {
@@ -179,6 +187,8 @@ export class CanvasStore {
   updatedAt: string;
   private model: Model = emptyModel();
   private layoutMap = new Map<string, XY>();
+  /** Edge attachment points (editor-only, like positions; kept for deleted edges so undo restores them). */
+  private anchorMap = new Map<string, EdgeEnds>();
   private layoutListeners = new Set<LayoutListener>();
   private _sessionId: string = randomUUID();
   private _revision = 0;
@@ -223,7 +233,11 @@ export class CanvasStore {
     return Object.fromEntries(this.layoutMap);
   }
 
-  setLayout(positions: Record<string, XY>, origin?: string): void {
+  anchors(): Record<string, EdgeEnds> {
+    return Object.fromEntries(this.anchorMap);
+  }
+
+  setLayout(positions: Record<string, XY>, origin?: string, anchors: Record<string, EdgeEndsPatch> = {}): void {
     const accepted: Record<string, XY> = {};
     for (const [id, p] of Object.entries(positions)) {
       if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
@@ -235,9 +249,22 @@ export class CanvasStore {
       if (w && h) Object.assign(accepted[id], { w, h });
       this.layoutMap.set(id, accepted[id]);
     }
-    if (!Object.keys(accepted).length) return;
+    const ends: Record<string, EdgeEnds> = {};
+    for (const [id, patch] of Object.entries(anchors)) {
+      if (this.model.type !== "flowchart" || (!this.model.edges.has(id) && !this.anchorMap.has(id))) continue;
+      const next: EdgeEnds = { ...this.anchorMap.get(id) };
+      for (const end of ["from", "to"] as const) {
+        const a = patch?.[end];
+        if (a === null) delete next[end];
+        else if (a && SIDES.includes(a.side) && Number.isFinite(a.t)) next[end] = { side: a.side, t: Math.round(Math.min(1, Math.max(0, a.t)) * 1000) / 1000 };
+      }
+      if (next.from || next.to) this.anchorMap.set(id, next);
+      else this.anchorMap.delete(id);
+      ends[id] = next;
+    }
+    if (!Object.keys(accepted).length && !Object.keys(ends).length) return;
     this.touch();
-    for (const fn of this.layoutListeners) fn(accepted, origin);
+    for (const fn of this.layoutListeners) fn(accepted, origin, ends);
   }
 
   // --- reads -----------------------------------------------------------------
@@ -249,7 +276,7 @@ export class CanvasStore {
       revision: this._revision,
       type: this.model.type,
       diagram: this.mermaid(),
-      annotations: this.annotationList(),
+      annotations: this.annotationList().map((a) => (awaitingAgent(a) ? { ...a, awaitingReply: true as const } : a)),
     };
   }
 
@@ -268,6 +295,7 @@ export class CanvasStore {
       diagram: this.mermaid(),
       history: { undo: this.undoStack.length, redo: this.redoStack.length },
       layout: this.layout(),
+      anchors: this.anchors(),
     };
   }
 
@@ -306,6 +334,7 @@ export class CanvasStore {
         usedIds: [...m.usedIds],
       },
       layout: this.layout(),
+      anchors: this.anchors(),
     };
   }
 
@@ -334,6 +363,7 @@ export class CanvasStore {
     const broken = integrityProblems(store.model);
     if (broken.length) throw new Error(broken[0]);
     store.layoutMap = new Map(Object.entries(data.layout ?? {}));
+    store.anchorMap = new Map(Object.entries(data.anchors ?? {}));
     return store;
   }
 
@@ -379,7 +409,7 @@ export class CanvasStore {
 
     ops.forEach((op, index) => {
       try {
-        applyOp(draft, op, log, sideEffects, created);
+        applyOp(draft, op, log, sideEffects, created, { source, actor });
       } catch (err) {
         if (err instanceof CanvasError) {
           throw new CanvasError(err.code, `operation ${index} (${op.op}): ${err.message}`, {
@@ -509,6 +539,7 @@ export class CanvasStore {
   reset(source: ChangeSource): { sessionId: string; revision: number } {
     this.model = emptyModel(this.model.type);
     this.layoutMap = new Map();
+    this.anchorMap = new Map();
     this.touch();
     this.undoStack = [];
     this.redoStack = [];
@@ -747,12 +778,19 @@ function integrityProblems(m: Model): string[] {
 
 // --- operation semantics -------------------------------------------------------
 
+/** Who applies a patch: marks and replies record their author, and agents may not rewrite the user's marks. */
+interface Author {
+  source: ChangeSource;
+  actor?: string;
+}
+
 function applyOp(
   m: Model,
   op: Operation,
   log: ChangeOp[],
   sideEffects: ChangeOp[],
   created: { nodes: string[]; edges: string[]; annotations: number[]; elements: string[] },
+  who: Author,
 ): void {
   if (SEQUENCE_OPS.has(op.op)) {
     requireType(m, "sequence", op.op);
@@ -859,6 +897,8 @@ function applyOp(
       if (op.kind) a.kind = op.kind;
       const text = op.text?.trim();
       if (text) a.text = text;
+      a.by = who.source;
+      if (who.source === "agent" && who.actor) a.agent = who.actor;
       m.annotations.set(a.id, a);
       created.annotations.push(a.id);
       log.push({ op: "add_annotation", ...a });
@@ -867,6 +907,13 @@ function applyOp(
     case "update_annotation": {
       const a = m.annotations.get(op.id);
       if (!a) throw new CanvasError("not_found", `annotation #${op.id} does not exist`, { annotationId: op.id });
+      if (who.source === "agent" && a.by !== "agent" && (op.text !== undefined || op.kind !== undefined)) {
+        throw new CanvasError(
+          "reply_instead",
+          `mark #${op.id} is the user's: its text and kind stay as they wrote them. Answer it with {"op":"reply_annotation","id":${op.id},"text":"..."}`,
+          { annotationId: op.id },
+        );
+      }
       const next: Annotation = { ...a };
       const entry: ChangeOp = { op: "update_annotation", id: op.id };
       if (op.nodeIds !== undefined) next.nodeIds = entry.nodeIds = uniq(op.nodeIds).map((id) => requireNode(m, id).id);
@@ -893,6 +940,17 @@ function applyOp(
       log.push(entry);
       return;
     }
+    case "reply_annotation": {
+      const a = m.annotations.get(op.id);
+      if (!a) throw new CanvasError("not_found", `annotation #${op.id} does not exist`, { annotationId: op.id });
+      if ((a.replies?.length ?? 0) >= LIMITS.repliesPerMark) throw new CanvasError("too_large", `at most ${LIMITS.repliesPerMark} replies per mark`);
+      const text = op.text.trim();
+      if (!text) throw new CanvasError("invalid_patch", "a reply needs text");
+      const reply: Reply = { by: who.source, ...(who.source === "agent" && who.actor ? { agent: who.actor } : {}), text, at: new Date().toISOString() };
+      m.annotations.set(op.id, { ...a, replies: [...(a.replies ?? []), reply] });
+      log.push({ op: "reply_annotation", id: op.id, ...reply });
+      return;
+    }
     case "remove_annotation": {
       if (!m.annotations.delete(op.id)) {
         throw new CanvasError("not_found", `annotation #${op.id} does not exist`, { annotationId: op.id });
@@ -913,13 +971,13 @@ function applyOp(
       }
       // Expands into ordinary operations so the log, undo and agents see exactly what happened.
       for (const e of [...m.edges.values()]) {
-        if (e.status === "removed" && m.edges.has(e.id)) applyOp(m, { op: "remove_edge", id: e.id }, log, sideEffects, created);
+        if (e.status === "removed" && m.edges.has(e.id)) applyOp(m, { op: "remove_edge", id: e.id }, log, sideEffects, created, who);
       }
       for (const n of [...m.nodes.values()]) {
-        if (n.status === "removed") applyOp(m, { op: "remove_node", id: n.id }, log, sideEffects, created);
+        if (n.status === "removed") applyOp(m, { op: "remove_node", id: n.id }, log, sideEffects, created, who);
       }
-      for (const e of [...m.edges.values()]) if (e.status) applyOp(m, { op: "update_edge", id: e.id, status: null }, log, sideEffects, created);
-      for (const n of [...m.nodes.values()]) if (n.status) applyOp(m, { op: "update_node", id: n.id, status: null }, log, sideEffects, created);
+      for (const e of [...m.edges.values()]) if (e.status) applyOp(m, { op: "update_edge", id: e.id, status: null }, log, sideEffects, created, who);
+      for (const n of [...m.nodes.values()]) if (n.status) applyOp(m, { op: "update_node", id: n.id, status: null }, log, sideEffects, created, who);
       return;
     }
   }
