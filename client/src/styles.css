@@ -391,7 +391,7 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .session-actions-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
 .session-actions-menu .muted { margin: 6px 10px 2px; font-size: 11px; }
 .agents { display: inline-flex; gap: 4px; min-width: 0; overflow: hidden; }
-.agents .agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: min(220px, 22vw); }
+.agents .agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: min(200px, 15vw); }
 .agent b { font-weight: 700; }
 
 /* ---- change legend ---- */
@@ -546,6 +546,19 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 }
 .frozen-lane[class*="status-"] { background: var(--sb); border-color: var(--sc); }
 .toolgroup button.on { background: #e7eefc; color: var(--accent); border-color: #2f6fde55; }
+/* The auto-tidy toggle: an iOS-style switch whose knob slides right when on. */
+.toolgroup button.tidy-auto { gap: 4px; padding: 4px 6px 4px 2px; margin-left: -6px; color: var(--muted); }
+.tidy-auto .switch {
+  position: relative; width: 24px; height: 14px; border-radius: 7px; background: #c9cbd0;
+  transition: background 0.15s; flex: none;
+}
+.tidy-auto .switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px #0003; transition: transform 0.15s;
+}
+.toolgroup button.tidy-auto[aria-checked="true"] { color: var(--ink); }
+.tidy-auto[aria-checked="true"] .switch { background: #34c759; }
+.tidy-auto[aria-checked="true"] .switch::after { transform: translateX(10px); }
 
 /* ---- narrow windows (also one side of a split view, which is its own viewport) ---- */
 @media (max-width: 1000px) {
