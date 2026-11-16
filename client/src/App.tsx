@@ -18,7 +18,7 @@ import {
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import type { Anchor, Annotation, AnnotationKind, ChangeStatus, EdgeEnds, NodeShape } from "../../server/types.ts";
+import type { Anchor, Annotation, AnnotationKind, ChangeOp, ChangeStatus, EdgeEnds, NodeShape } from "../../server/types.ts";
 import { resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
@@ -81,6 +81,12 @@ const place = (n: CanvasNode, p: XY | undefined): CanvasNode =>
 
 const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a, gap = 20) =>
   a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
+
+/** Changes that can leave a flowchart's layout untidy: new, removed or reconnected elements, and new label text (sizes). */
+const structural = (op: ChangeOp) =>
+  ["add_node", "remove_node", "add_edge", "remove_edge"].includes(op.op) ||
+  (op.op === "update_node" && (op.label !== undefined || op.shape !== undefined)) ||
+  (op.op === "update_edge" && (op.from !== undefined || op.to !== undefined || op.label !== undefined));
 
 interface AppProps {
   /** Receives the server's session list whenever it changes (the tab strip lives outside the canvas). */
@@ -148,6 +154,29 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       return true;
     }
   });
+  /** Flowcharts: re-tidy the layout after an agent changes the diagram's structure (remembered per browser). */
+  const [autoTidy, setAutoTidy] = useState(() => {
+    try {
+      return localStorage.getItem("vc.autoTidy") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const autoTidyRef = useRef(autoTidy);
+  autoTidyRef.current = autoTidy;
+  const toggleAutoTidy = useCallback(() => {
+    setAutoTidy((on) => {
+      try {
+        localStorage.setItem("vc.autoTidy", on ? "0" : "1");
+      } catch {
+        // storage unavailable: the choice lasts for this page only
+      }
+      return !on;
+    });
+  }, []);
+  const tidyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const editingRef = useRef<string | null>(null);
+  editingRef.current = editingId;
   const toggleFreezeLanes = useCallback(() => {
     setFreezeLanes((on) => {
       try {
@@ -172,6 +201,15 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     rf.fitView(ids?.length ? { ...FIT, nodes: ids.map((id) => ({ id })) } : FIT);
   }, [rf]);
 
+  /** Whether all of these boxes (flow coordinates) lie inside the visible canvas. */
+  const inView = useCallback((boxes: Array<{ x: number; y: number; width: number; height: number }>) => {
+    const pane = document.querySelector(".react-flow")?.getBoundingClientRect();
+    if (!pane) return true;
+    const tl = rf.screenToFlowPosition({ x: pane.left, y: pane.top });
+    const br = rf.screenToFlowPosition({ x: pane.right, y: pane.bottom });
+    return boxes.every((b) => b.x >= tl.x && b.y >= tl.y && b.x + b.width <= br.x && b.y + b.height <= br.y);
+  }, [rf]);
+
   const pushStep = useCallback((step: HistoryStep) => {
     const top = undoSteps.current.at(-1);
     redoSteps.current = [];
@@ -193,7 +231,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       });
   }, []);
 
-  const autoLayout = useCallback((record = false) => {
+  /** fit: "always", or "outside" to reframe only when part of the diagram ends up out of view. */
+  const autoLayout = useCallback((record = false, fitMode: "always" | "outside" = "always") => {
     const s = stateRef.current;
     if (!s) return;
     const before = Object.fromEntries(s.nodes.map((n) => [n.id, positions.current[n.id]]).filter(([, p]) => p));
@@ -206,8 +245,22 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     shareLayout(laid);
     setNodes((nds) => nds.map((n) => place(n, positions.current[n.id])));
     setEdgeVersion((v) => v + 1);
-    setTimeout(() => fit(), 30);
-  }, [fit, pushStep, shareLayout, sizeOf]);
+    if (fitMode === "always" || !inView(s.nodes.map((n) => ({ ...positions.current[n.id], ...sizeOf(n) })))) setTimeout(() => fit(), 30);
+  }, [fit, inView, pushStep, shareLayout, sizeOf]);
+
+  /**
+   * Tidies after an agent's structural change (nodes or edges added, removed or reconnected, labels
+   * that change a node's size), once new nodes are measured. A burst of changes tidies once, and it
+   * waits while the user drags or types so nothing moves under their hands.
+   */
+  const scheduleTidy = useCallback(() => {
+    clearTimeout(tidyTimer.current);
+    tidyTimer.current = setTimeout(function run() {
+      if (!autoTidyRef.current) return;
+      if (dragging.current.size || editingRef.current) return void (tidyTimer.current = setTimeout(run, 500));
+      autoLayout(false, "outside");
+    }, 250);
+  }, [autoLayout]);
 
   const setPosition = useCallback((id: string, pos: XY) => {
     positions.current[id] = pos;
@@ -281,8 +334,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       // Laid out once real node sizes have been measured; autoLayout also fits the view.
       if (relayout || event?.ops.some((op) => op.op === "set_direction")) setTimeout(() => autoLayout(), 80);
       else if (event?.ops.some((op) => op.op === "replace_diagram")) setTimeout(() => fit(), 80);
+      else if (next.type !== "sequence" && event?.source === "agent" && event.ops.some(structural)) scheduleTidy();
     },
-    [autoLayout, fit, flashTouched, shareLayout, sizeOf],
+    [autoLayout, fit, flashTouched, scheduleTidy, shareLayout, sizeOf],
   );
 
   /** Positions moved in another browser (or tab) on the same session. */
@@ -1036,9 +1090,21 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           </div>
           <div className="toolgroup">
             {!isSeq && (
-              <button onClick={() => autoLayout(true)} disabled={!nodes.length} title="Tidy layout (L)">
-                ⤧ Tidy
-              </button>
+              <>
+                <button onClick={() => autoLayout(true)} disabled={!nodes.length} title="Tidy layout (L)">
+                  ⤧ Tidy
+                </button>
+                <button
+                  className="tidy-auto"
+                  role="switch"
+                  aria-checked={autoTidy}
+                  onClick={toggleAutoTidy}
+                  title={`Auto-tidy ${autoTidy ? "on" : "off"}: tidy the layout by itself after an agent adds, removes, reconnects or relabels steps (your own edits keep your layout)`}
+                >
+                  <span className="switch" aria-hidden />
+                  Auto
+                </button>
+              </>
             )}
             <button onClick={() => fit()} disabled={!nodes.length} title="Fit to screen (F)">
               ⛶ Fit

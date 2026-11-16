@@ -40,6 +40,11 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
   name is taken, you are asked for another one; an existing session is never overwritten.
 - **Layout** (node positions) belongs to the session: it is shared live between browsers and saved,
   but never sent to agents.
+- **Auto-tidy** (the **Auto** switch next to **Tidy**, on by default, remembered per browser):
+  after an agent adds, removes, reconnects or relabels flowchart steps, the layout tidies itself, and
+  the view reframes only if part of the diagram ends up out of sight. It waits while you drag or type.
+  Your own edits never trigger it, so a layout you arranged by hand stays until the agent changes the
+  structure; switch it off to keep your layout through agent edits too.
 
 ## Several agents
 
@@ -244,7 +249,8 @@ An agent (or you) can show a change to an existing flow on the canvas instead of
 - **Browser and agent share one code path.** The editor sends the same patch ops (`POST /api/patch`)
   with `expectedRevision` and receives every committed change over a WebSocket (`/ws`).
 - **Layout lives only in the browser.** Positions are kept per session in `localStorage`. Existing
-  nodes never move on agent edits. New nodes are placed next to a connected neighbour.
+  nodes move on agent edits only through auto-tidy (see Sessions); with it off, new nodes are placed
+  next to a connected neighbour.
 - **Security**: the server binds to 127.0.0.1 only. Host-header validation (from the MCP SDK) and an
   Origin check apply to `/mcp`, `/api` and `/ws`. Labels are rendered as plain text.
 
@@ -260,7 +266,7 @@ An agent (or you) can show a change to an existing flow on the canvas instead of
 | Move a group | Drag any selected node to move the whole selection, or drag a mark's label to move everything that mark wraps (one undo step) |
 | Mark | Select, then `M` or a kind chip on the floating bar, then type the note. Box-selected marks target nodes; the ring covers their edges |
 | Talk to the agent | **Copy prompt for agent** (Marks panel) or ⧉ on a mark copies a ready reference |
-| Navigate | Click a mark card, badge or activity entry to select and zoom to it. `F` fits, `L` tidies |
+| Navigate | Click a mark card, badge or activity entry to select and zoom to it. `F` fits, `L` tidies (agent edits tidy by themselves while **Auto** is on) |
 | Resize | Select a node and drag a corner or edge. The size is layout (shared, saved, undoable, never sent to agents); text never gets cut, the node grows taller instead |
 | Read cut-off text | Hover any shortened label (lane names, message labels, notes, block labels, mark targets) for its full text |
 
