@@ -18,8 +18,9 @@ npm start          # builds the editor, then serves http://127.0.0.1:4317/ and M
 The server holds any number of **named canvas sessions**. Each one is an independent canvas with
 its own diagram, marks (numbering starts at #1 per session), revisions, undo history and layout.
 
-- **Browser:** `http://127.0.0.1:4317/` opens `default`; `/s/<name>` opens another. Use the
-  **session** menu in the top bar to switch, create, clear or delete sessions.
+- **Browser:** `http://127.0.0.1:4317/` opens `default`; `/s/<name>` opens another. Each session is a
+  tab below the top bar; **+ New session** creates one, and the current tab's **⋯** menu exports,
+  imports, clears or deletes.
 - **Agents:** every tool takes an optional `session` argument (default `default`). Tell the agent
   which one to use, e.g. *"…on the visual canvas (session "auth-redesign")"*. **Copy prompt for
   agent** includes the name for you. Agents can also call `canvas_list_sessions`, and
@@ -28,7 +29,7 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
   layout) and reloaded on start. `CANVAS_DATA_DIR=/path` moves the folder; `CANVAS_PERSIST=0` keeps
   everything in memory. Undo history and the change log are not saved; after a restart, agents
   asking for changes are told to re-read the snapshot.
-- **Export / import:** the session menu's **Export this canvas** downloads `<name>.canvas.json` (the
+- **Export / import:** the current tab's **⋯** menu: **Export this canvas** downloads `<name>.canvas.json` (the
   same format as the saved file), and **Import from file…** adds such a file as a new session. If its
   name is taken, you are asked for another one; an existing session is never overwritten.
 - **Layout** (node positions) belongs to the session: it is shared live between browsers and saved,
@@ -111,7 +112,7 @@ conventions explained in every conversation:
 ## Sequence diagrams (timelines and concurrency)
 
 A session holds either a **flowchart** or a **sequence diagram**. Pick the type when creating a
-session (session menu, or `canvas_create_session {type: "sequence"}`), switch on an empty canvas, or
+session (**+ New session**, or `canvas_create_session {type: "sequence"}`), switch on an empty canvas, or
 let the agent send a `sequenceDiagram` to `canvas_replace_diagram`.
 
 - **Interchange** is Mermaid `sequenceDiagram`: `participant`/`actor`, messages

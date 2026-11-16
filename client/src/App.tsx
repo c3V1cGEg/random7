@@ -53,7 +53,7 @@ import type { SequenceLayout } from "./sequenceLayout.ts";
 import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
 import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
-import { SessionMenu } from "./SessionMenu.tsx";
+import { SessionTabs } from "./SessionTabs.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
 
 const TOUCH_HIGHLIGHT_MS = 4000;
@@ -946,7 +946,6 @@ function Canvas() {
       <div className="app">
         <header className="topbar">
           <strong className="title">Visual Agent Canvas</strong>
-          <SessionMenu sessions={sessionList} title={state?.title} onClear={clearCanvas} onError={showToast} />
           <span className={`status ${connected ? "on" : "off"}`} title={`Revision ${state?.revision ?? "–"} · saved on the server`}>
             {connected ? "● live" : "○ reconnecting…"}
           </span>
@@ -1020,6 +1019,7 @@ function Canvas() {
             </button>
           </div>
         </header>
+        <SessionTabs sessions={sessionList} onClear={clearCanvas} onError={showToast} />
 
         <div className="main">
           <div
