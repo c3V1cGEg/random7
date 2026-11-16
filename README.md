@@ -68,6 +68,66 @@ Any other client that supports MCP Streamable HTTP can use the same URL. Then pr
 *"Inspect the batch processing and show its business logic on the canvas. No code changes."*
 Later: *"Look at mark #2 and revise that branch."*
 
+## Live notifications to a running Claude Code session (channel)
+
+Normally the agent sees your browser edits only when you ask it to look again. With the **channel
+bridge**, a running Claude Code session is told automatically when you change a diagram or its
+marks, and reads the change with the usual tools. Channels are a Claude Code **research preview**:
+they need a claude.ai login or Console API key; on Team/Enterprise an Owner must enable them.
+
+**What notifies:** committed edits you make in the browser that agents can see: nodes, participants,
+messages, fragments, labels, edges, statuses, accepting changes, undo/redo, clearing, and marks
+(adding, editing, deleting, replying). **What does not:** moving, resizing, re-anchoring arrows,
+zoom/pan, selection, and anything an agent changed itself. Edits within ~2 s of each other become one
+notification (at most 10 s late), naming the session, the revision range, the categories (`mermaid`,
+`annotations`) and the touched ids, never your text:
+
+```text
+<channel source="visual-canvas-channel" session="checkout" revision="42" since_revision="39" categories="annotations,mermaid" …>
+The user changed the diagram and the marks of canvas session "checkout" in the browser (now revision 42).
+Touched: n3, e2, #4. Read it with canvas_get_changes {session: "checkout", sinceRevision: 39}.
+</channel>
+```
+
+**Set up** (the canvas server must be running, and `visual-canvas` connected as above):
+
+```bash
+# in this repo, register the bridge for all projects (absolute paths; run from the repo root)
+claude mcp add --scope user visual-canvas-channel -- node "$PWD/node_modules/tsx/dist/cli.mjs" "$PWD/server/channel.ts"
+# (inside this repo, .mcp.json already registers it; approve "New MCP server found" on first start)
+
+# start Claude Code with the channel enabled (in the project you are discussing)
+claude --dangerously-load-development-channels server:visual-canvas-channel
+```
+
+Confirm the warning (**I am using this for local development**). The startup notice
+*"Channels (experimental) messages from server:visual-canvas-channel inject directly in this
+session"* means it is active. `/mcp` shows the bridge; its tool `canvas_channel_watch` reports
+whether it reaches the canvas server and limits events to some sessions (default: all; or set
+`CANVAS_CHANNEL_SESSIONS=a,b`). Other settings: `CANVAS_URL` (default `http://127.0.0.1:4317`),
+`CANVAS_CHANNEL_QUIET_MS`, `CANVAS_CHANNEL_MAX_WAIT_MS` (pass with `-e` to `claude mcp add`).
+
+**Try it:** ask the agent to draw something on a session, then in the browser rename a step or add a
+mark. Within a few seconds the agent gets the event in the same session, without a new prompt, and
+reads it with `canvas_get_changes`. Moving a box does nothing.
+
+**How it works:** the canvas server streams committed user changes as Server-Sent Events on
+`GET /api/events` (loopback only; host and origin checked like the rest of the API). It only learns
+of changes at its commit point, which also feeds the change log agents read, so a notification never
+announces something the tools cannot return yet. `server/channel.ts` is a small stdio MCP server that
+Claude Code starts; it follows that stream, merges bursts, and sends `notifications/claude/channel`.
+The canvas server itself stays a Streamable-HTTP MCP server with its tools unchanged.
+
+**Limits:**
+- A notification is only written to Claude Code; nothing tells the canvas whether the agent read it.
+  Without the flag, or when policy blocks channels, Claude Code drops events silently: the bridge
+  cannot tell, so the browser never claims an agent was notified.
+- Edits made while the bridge is not connected are not announced afterwards (they are still in the
+  change log and snapshot the agent reads the next time it looks).
+- Every channel-enabled Claude Code session gets events for every watched session. Use
+  `canvas_channel_watch` (or `CANVAS_CHANNEL_SESSIONS`) when several sessions run side by side.
+- Events that arrive while Claude is busy are queued and delivered together on its next turn.
+
 ## MCP tools
 
 | Tool | Purpose |
@@ -205,6 +265,7 @@ seconds. `?` opens the shortcut sheet.
 ## Tests
 
 ```bash
-npm test        # parser/store unit tests + e2e: real server, official MCP client, WebSocket
+npm test        # parser/store unit tests + e2e: real server, official MCP client, WebSocket,
+                # and the channel bridge over stdio (what notifies, what does not)
 npm run typecheck
 ```
