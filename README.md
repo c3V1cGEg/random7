@@ -179,6 +179,7 @@ An agent (or you) can show a change to an existing flow on the canvas instead of
 | Connect | Drag from a handle onto a node. Drop on empty canvas to create a connected step there |
 | Rename | Double-click, `Enter` or `F2`, for nodes and edges. Decision branches get Yes/No automatically |
 | Select | Drag on the canvas (box), Shift/Ctrl-click, `Ctrl+A`. Pan with Space-drag or scroll; zoom with Ctrl+scroll |
+| Move a group | Drag any selected node to move the whole selection, or drag a mark's label to move everything that mark wraps (one undo step) |
 | Mark | Select, then `M` or a kind chip on the floating bar, then type the note. Box-selected marks target nodes; the ring covers their edges |
 | Talk to the agent | **Copy prompt for agent** (Marks panel) or ⧉ on a mark copies a ready reference |
 | Navigate | Click a mark card, badge or activity entry to select and zoom to it. `F` fits, `L` tidies |

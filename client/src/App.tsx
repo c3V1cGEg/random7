@@ -11,6 +11,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
+  useStore,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -616,6 +617,33 @@ function Canvas() {
     [pushStep, shareLayout],
   );
 
+  /** Dragging a mark's bubble moves every element it wraps; `delta` null ends the drag (one undo step). */
+  const groupDrag = useRef<Record<string, XY> | null>(null);
+  const dragGroup = useCallback(
+    (ids: string[], delta: XY | null) => {
+      if (!groupDrag.current) {
+        groupDrag.current = Object.fromEntries(ids.filter((id) => positions.current[id]).map((id) => [id, { ...positions.current[id] }]));
+        ids.forEach((id) => dragging.current.add(id));
+      }
+      const before = groupDrag.current;
+      if (delta) {
+        const moved = Object.fromEntries(Object.entries(before).map(([id, p]) => [id, { ...p, x: p.x + delta.x, y: p.y + delta.y }]));
+        Object.assign(positions.current, moved);
+        setNodes((nds) => nds.map((n) => (moved[n.id] ? place(n, moved[n.id]) : n)));
+        return;
+      }
+      groupDrag.current = null;
+      ids.forEach((id) => dragging.current.delete(id));
+      const after = Object.fromEntries(Object.keys(before).map((id) => [id, { ...positions.current[id] }]));
+      if (Object.keys(before).some((id) => before[id].x !== after[id].x || before[id].y !== after[id].y)) {
+        pushStep({ kind: "layout", before, after });
+        shareLayout(after);
+        setEdgeVersion((v) => v + 1);
+      }
+    },
+    [pushStep, shareLayout],
+  );
+
   /** End of a resize (drag a corner of a selected node): the size is layout, shared and undoable like a move. */
   const resizeNode = useCallback(
     (id: string, r: { x: number; y: number; width: number; height: number }) => {
@@ -1074,7 +1102,13 @@ function Canvas() {
               {isSeq && freezeLanes && state && seqLayout.current && (
                 <FrozenLanes participants={state.sequence.participants} laneY={seqLayout.current.laneY} onSelect={(id) => selectOnly([id])} />
               )}
-              <MarkRings annotations={state?.annotations ?? []} nodes={nodes} active={hoverMark ?? activeMark} onFocus={focusMarkById} />
+              <MarkRings
+                annotations={state?.annotations ?? []}
+                nodes={nodes}
+                active={hoverMark ?? activeMark}
+                onFocus={focusMarkById}
+                onDrag={isSeq ? undefined : dragGroup}
+              />
               {!editingId && isSeq && state && (
                 <SequenceBar
                   sequence={state.sequence}
@@ -1171,12 +1205,17 @@ function MarkRings({
   nodes,
   active,
   onFocus,
+  onDrag,
 }: {
   annotations: Annotation[];
   nodes: CanvasNode[];
   active: number | null;
   onFocus: (id: number) => void;
+  /** Flowcharts only: moves the ring's nodes by a flow-space delta (null = drag ended). */
+  onDrag?: (ids: string[], delta: XY | null) => void;
 }) {
+  const zoom = useStore((s) => s.transform[2]);
+  const drag = useRef<{ ids: string[]; x: number; y: number; moved: boolean } | null>(null);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const rings: Array<{ a: Annotation; x: number; y: number; w: number; h: number }> = [];
   for (const a of annotations) {
@@ -1199,7 +1238,35 @@ function MarkRings({
           className={`ring kind-${a.kind ?? "none"}${active === a.id ? " active" : ""}`}
           style={{ transform: `translate(${x}px, ${y}px) rotate(${a.id % 2 ? -0.6 : 0.5}deg)`, width: w, height: h }}
         >
-          <button className="ring-badge" onClick={() => onFocus(a.id)} aria-label={`Open mark #${a.id}`}>
+          <button
+            className={`ring-badge nodrag nopan${onDrag ? " movable" : ""}`}
+            title={onDrag ? "Click to open · drag to move everything in this mark" : undefined}
+            onPointerDown={(e) => {
+              if (!onDrag || e.button !== 0) return;
+              e.stopPropagation();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              drag.current = { ids: a.nodeIds, x: e.clientX, y: e.clientY, moved: false };
+            }}
+            onPointerMove={(e) => {
+              const d = drag.current;
+              if (!d) return;
+              const dx = e.clientX - d.x;
+              const dy = e.clientY - d.y;
+              if (!d.moved && Math.hypot(dx, dy) < 4) return;
+              d.moved = true;
+              onDrag?.(d.ids, { x: dx / zoom, y: dy / zoom });
+            }}
+            onPointerUp={() => {
+              if (drag.current?.moved) onDrag?.(drag.current.ids, null);
+              else drag.current = null;
+            }}
+            onClick={() => {
+              const moved = drag.current?.moved;
+              drag.current = null;
+              if (!moved) onFocus(a.id);
+            }}
+            aria-label={`Open mark #${a.id}`}
+          >
             <span>#{a.id}</span>
             {a.kind && <span className="ring-kind">{KIND_META[a.kind].icon}</span>}
             {a.text && <span className="ring-text">{a.text}</span>}
@@ -1272,7 +1339,7 @@ function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number
   if (editing) hint = "Enter save · Tab save & add next step · Esc cancel";
   else if (nodes === 1 && !edges) hint = "Enter rename · Tab add next step · M mark · drag a handle to connect · Del delete";
   else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
-  else if (nodes || edges) hint = `${nodes + edges} selected · M mark selection · Del delete`;
+  else if (nodes || edges) hint = `${nodes + edges} selected · drag any selected node to move them together · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
   else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · ? shortcuts";
   return <div className="context-hint">{hint}</div>;
@@ -1339,6 +1406,8 @@ const SHORTCUTS: Array<[string, string]> = [
   ["M", "Mark the selection (then type the note)"],
   ["Drag on canvas", "Box-select (touching counts)"],
   ["Shift / Ctrl-click", "Add to selection"],
+  ["Drag a selected node", "Move the whole selection together"],
+  ["Drag a mark's label", "Move every element the mark wraps (click it to open the note)"],
   ["Ctrl+A", "Select all"],
   ["Del / Backspace", "Delete selection"],
   ["Space-drag, scroll", "Pan · Ctrl+scroll or pinch to zoom"],
