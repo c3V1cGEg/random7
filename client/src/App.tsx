@@ -1438,6 +1438,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Del / Backspace", "Delete selection"],
   ["Space-drag, scroll", "Pan · Ctrl+scroll or pinch to zoom"],
   ["Ctrl+Z / Ctrl+Shift+Z", "Undo / redo your own changes (incl. moves); never undoes the agent's"],
+  ["Alt+N (Option+N)", "New session tab (Ctrl/Cmd+N too, where the browser does not keep it for a new window)"],
   ["L / F", "Tidy layout / fit to screen"],
   ["Esc", "Clear selection"],
 ];
@@ -1452,6 +1453,7 @@ const SEQUENCE_SHORTCUTS: Array<[string, string]> = [
   ["↑ / ↓", "Move the selected lane up / down"],
   ["Select items + alt / par / loop…", "Group them in a block; par makes each item its own concurrent branch"],
   ["M · Del · Ctrl+Z", "Mark · delete · undo, as in flowcharts"],
+  ["Alt+N (Option+N)", "New session tab (Ctrl/Cmd+N too, where the browser does not keep it for a new window)"],
   ["Steps 1, 2, 3…", "Logical order only, not time; concurrent and alternative work shares step numbers"],
 ];
 

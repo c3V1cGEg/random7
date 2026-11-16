@@ -19,7 +19,7 @@ The server holds any number of **named canvas sessions**. Each one is an indepen
 its own diagram, marks (numbering starts at #1 per session), revisions, undo history and layout.
 
 - **Browser:** `http://127.0.0.1:4317/` opens `default`; `/s/<name>` opens another. Each session is a
-  tab below the top bar; **+ New session** creates one, and the current tab's **⋯** menu exports,
+  tab below the top bar; **+ New session** (or Alt+N) creates one, and the current tab's **⋯** menu exports,
   imports, clears or deletes.
 - **Agents:** every tool takes an optional `session` argument (default `default`). Tell the agent
   which one to use, e.g. *"…on the visual canvas (session "auth-redesign")"*. **Copy prompt for

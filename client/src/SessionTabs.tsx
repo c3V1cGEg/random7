@@ -69,6 +69,22 @@ export function SessionTabs({
   const tabs = [...sessions].sort((a, b) => a.name.localeCompare(b.name));
   if (!tabs.some((s) => s.name === SESSION)) tabs.push({ name: SESSION } as SessionSummary);
 
+  // Ctrl/Cmd+N opens the new-session form where the browser lets the page have it (most keep it for
+  // "new window"), so Alt/Option+N does the same everywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "KeyN" || e.shiftKey) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select, [contenteditable=true]");
+      if (!(mod && !e.altKey) && !(e.altKey && !mod && !typing)) return;
+      e.preventDefault();
+      setMenuOpen(false);
+      setNewOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Keep the current tab in view when there are more tabs than fit.
   useEffect(() => {
     strip.current?.querySelector(".session-tab.current")?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -146,7 +162,7 @@ export function SessionTabs({
         })}
       </div>
       <div className="session-new-wrap" ref={newRef}>
-        <button className="session-add" onClick={() => setNewOpen((o) => !o)} title="Create a new canvas session">
+        <button className="session-add" onClick={() => setNewOpen((o) => !o)} title="Create a new canvas session (Alt+N; Ctrl/Cmd+N where the browser allows it)">
           + New session
         </button>
         {newOpen && (
