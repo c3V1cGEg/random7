@@ -25,8 +25,9 @@ const url = process.env.CANVAS_URL;
 const distro = process.env.WSL_DISTRO_NAME;
 if (distro) {
   // The bridge runs inside WSL (this node, these files), reaching the canvas server at 127.0.0.1.
+  // --exec, not -e: `claude mcp add` took a bare -e for its own --env option and dropped the script path.
   const inWsl = [process.execPath, bridge];
-  const viaWsl = ["wsl.exe", "-d", distro, "-e", ...(url ? ["env", `CANVAS_URL=${url}`] : []), ...inWsl];
+  const viaWsl = ["wsl.exe", "-d", distro, "--exec", ...(url ? ["env", `CANVAS_URL=${url}`] : []), ...inWsl];
   let windowsPath;
   try {
     windowsPath = execFileSync("wslpath", ["-w", bridge], { encoding: "utf8" }).trim();
