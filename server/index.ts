@@ -204,6 +204,32 @@ app.get("/api/events", (req, res) => {
   });
 });
 
+/**
+ * How to register the channel bridge with Claude Code, worked out from where this server runs (its
+ * install folder, node binary, and WSL distro if any), for the setup card in the browser.
+ */
+app.get("/api/channel-setup", (req, res) => {
+  if (!originAllowed(req.headers.origin)) return void res.status(403).json({ error: "forbidden" });
+  const name = "visual-canvas-channel";
+  const bridge = path.join(ROOT, "server", "channel.mjs");
+  const node = process.execPath;
+  const url = PORT === 4317 ? null : `http://127.0.0.1:${PORT}`;
+  const q = (arg: string) => (/^[\w.:\\/=@+-]+$/.test(arg) ? arg : `"${arg}"`);
+  const env = url ? ` -e CANVAS_URL=${url}` : "";
+  const direct = `claude mcp add --scope user ${name}${env} -- ${q(node)} ${q(bridge)}`;
+  const distro = process.env.WSL_DISTRO_NAME;
+  const setups = distro
+    ? [
+        {
+          where: "Claude Code on Windows (PowerShell or cmd) — the bridge runs inside WSL",
+          command: `claude mcp add --scope user ${name} -- wsl.exe -d ${q(distro)} --exec ${url ? `env CANVAS_URL=${url} ` : ""}${q(node)} ${q(bridge)}`,
+        },
+        { where: `Claude Code inside WSL (${distro})`, command: direct },
+      ]
+    : [{ where: process.platform === "win32" ? "Claude Code on Windows" : "Claude Code on this machine", command: direct }];
+  res.json({ name, setups, start: `claude --dangerously-load-development-channels server:${name}` });
+});
+
 function streamChange(change: SemanticChange) {
   const chunk = `id: ${change.eventId}\nevent: change\ndata: ${JSON.stringify(change)}\n\n`;
   for (const res of eventStreams) res.write(chunk);

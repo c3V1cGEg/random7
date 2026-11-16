@@ -311,6 +311,8 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .channel-setup[open] summary { margin-bottom: 6px; }
 .channel-setup > span { display: block; margin: 8px 0 4px; }
 .channel-setup > span.muted { font-size: 12px; line-height: 1.45; }
+.channel-option { margin: 6px 0 2px; }
+.channel-where { display: block; font-size: 12px; font-weight: 600; margin-bottom: 3px; }
 
 .toast {
   position: absolute; bottom: 52px; left: 50%; transform: translateX(-50%); max-width: 520px; z-index: 10;
