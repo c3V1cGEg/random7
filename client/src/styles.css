@@ -546,6 +546,7 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 }
 .frozen-lane[class*="status-"] { background: var(--sb); border-color: var(--sc); }
 .toolgroup button.on { background: #e7eefc; color: var(--accent); border-color: #2f6fde55; }
+.sidebar-toggle .count { background: var(--agent); color: #fff; font-weight: 700; }
 /* The auto-tidy toggle: an iOS-style switch whose knob slides right when on. */
 .toolgroup button.tidy-auto { gap: 4px; padding: 4px 6px 4px 2px; margin-left: -6px; color: var(--muted); }
 .tidy-auto .switch {
