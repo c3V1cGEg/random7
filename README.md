@@ -1,5 +1,7 @@
 # Visual Agent Canvas — POC
 
+![Claude Code in a terminal (left) drawing a document upload flow on the Visual Agent Canvas in the browser (right)](docs/claude-code-and-canvas-side-by-side.png)
+
 A shared, live flowchart canvas. You edit it in the browser; an MCP coding agent reads and edits the
 same canvas through MCP tools. One local Node.js process serves both. The plans in `plans/` are
 numbered in the order they were built: [001 prototype spec](plans/001_visual_agent_canvas_mcp_prototype_spec.md),
