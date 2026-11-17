@@ -18,7 +18,7 @@ import {
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import type { Anchor, Annotation, AnnotationKind, ChangeOp, ChangeStatus, EdgeEnds, NodeShape } from "../../server/types.ts";
+import { awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type EdgeEnds, type NodeShape } from "../../server/types.ts";
 import { resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
@@ -173,6 +173,22 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       }
       return !on;
     });
+  }, []);
+  /** The right-hand panel with marks, activity and Mermaid; collapsed gives the canvas the full width (remembered per browser). */
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("vc.sidebar") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const showSidebar = useCallback((open: boolean) => {
+    setSidebarOpen(open);
+    try {
+      localStorage.setItem("vc.sidebar", open ? "1" : "0");
+    } catch {
+      // storage unavailable: the choice lasts for this page only
+    }
   }, []);
   const tidyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const editingRef = useRef<string | null>(null);
@@ -809,11 +825,12 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const id = res?.createdAnnotationIds?.[0];
       if (id) {
         pendingGroups.current.set(`mark:${id}`, group);
+        showSidebar(true);
         setActiveMark(id);
         setNoteFocus(id);
       }
     },
-    [markTargets, send],
+    [markTargets, send, showSidebar],
   );
 
   const markElements = (a: Annotation) => {
@@ -829,11 +846,12 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const activateMark = useCallback(
     (a: Annotation) => {
       setActiveMark(a.id);
+      showSidebar(true);
       const { select, frame } = markElements(a);
       selectOnly(select);
       if (frame.length) fit(frame);
     },
-    [fit, selectOnly],
+    [fit, selectOnly, showSidebar],
   );
 
   const focusMarkById = useCallback(
@@ -940,6 +958,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             return fit(), true;
           case "?":
             return setHelpOpen((h) => !h), true;
+          case "s":
+          case "S":
+            return showSidebar(!sidebarOpen), true;
           case "Escape":
             setHelpOpen(false);
             setActiveMark(null);
@@ -990,7 +1011,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, travel]);
+  }, [addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, showSidebar, sidebarOpen, travel]);
 
   // --- render ------------------------------------------------------------------
 
@@ -1020,6 +1041,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   );
 
   const singleEdge = selectedEdges.length === 1 && !selectedNodes.length ? selectedEdges[0] : undefined;
+  /** Marks the agent answered or asked about; shown on the panel button while the panel is hidden. */
+  const waitingForUser = state?.annotations.filter((a) => !awaitingAgent(a)).length ?? 0;
   const decisionEdge = !!singleEdge && state?.nodes.find((n) => n.id === singleEdge.source)?.shape === "decision";
 
   return (
@@ -1116,6 +1139,19 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             )}
           </div>
           <div className="toolgroup">
+            <button
+              className={`sidebar-toggle${sidebarOpen ? " on" : ""}`}
+              aria-pressed={sidebarOpen}
+              onClick={() => showSidebar(!sidebarOpen)}
+              title={`${sidebarOpen ? "Hide" : "Show"} the side panel with marks, activity and Mermaid (S)`}
+            >
+              ◨ Panel
+              {!sidebarOpen && !!waitingForUser && (
+                <span className="count" title={`${waitingForUser} mark${waitingForUser === 1 ? "" : "s"} waiting for you`}>
+                  {waitingForUser}
+                </span>
+              )}
+            </button>
             <button onClick={() => setHelpOpen(true)} title="Keyboard shortcuts (?)">
               ?
             </button>
@@ -1246,24 +1282,26 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             )}
           </div>
 
-          <aside className="sidebar">
-            {state && (
-              <MarksPanel
-                state={state}
-                activeMark={activeMark}
-                noteFocus={noteFocus}
-                selectionSize={selectedNodes.length + selectedEdges.length}
-                touched={touched}
-                send={send}
-                onActivate={activateMark}
-                onHover={setHoverMark}
-                onRetarget={(a) => void send([{ op: "update_annotation", id: a.id, ...markTargets() }])}
-                onCopy={copy}
-              />
-            )}
-            <ActivityPanel items={activity} onReveal={reveal} />
-            <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />
-          </aside>
+          {sidebarOpen && (
+            <aside className="sidebar">
+              {state && (
+                <MarksPanel
+                  state={state}
+                  activeMark={activeMark}
+                  noteFocus={noteFocus}
+                  selectionSize={selectedNodes.length + selectedEdges.length}
+                  touched={touched}
+                  send={send}
+                  onActivate={activateMark}
+                  onHover={setHoverMark}
+                  onRetarget={(a) => void send([{ op: "update_annotation", id: a.id, ...markTargets() }])}
+                  onCopy={copy}
+                />
+              )}
+              <ActivityPanel items={activity} onReveal={reveal} />
+              <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />
+            </aside>
+          )}
         </div>
         <OverflowTip />
         {helpOpen && <HelpOverlay sequence={isSeq} onClose={() => setHelpOpen(false)} />}
@@ -1562,6 +1600,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Ctrl+Z / Ctrl+Shift+Z", "Undo / redo your own changes (incl. moves); never undoes the agent's"],
   ["Alt+N (Option+N)", "New session tab (Ctrl/Cmd+N too, where the browser does not keep it for a new window)"],
   ["L / F", "Tidy layout / fit to screen"],
+  ["S", "Show / hide the side panel (marks, activity, Mermaid)"],
   ["Esc", "Clear selection"],
 ];
 
@@ -1575,6 +1614,7 @@ const SEQUENCE_SHORTCUTS: Array<[string, string]> = [
   ["↑ / ↓", "Move the selected lane up / down"],
   ["Select items + alt / par / loop…", "Group them in a block; par makes each item its own concurrent branch"],
   ["M · Del · Ctrl+Z", "Mark · delete · undo, as in flowcharts"],
+  ["S", "Show / hide the side panel (marks, activity, Mermaid)"],
   ["Alt+N (Option+N)", "New session tab (Ctrl/Cmd+N too, where the browser does not keep it for a new window)"],
   ["Steps 1, 2, 3…", "Logical order only, not time; concurrent and alternative work shares step numbers"],
 ];
