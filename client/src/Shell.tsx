@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import App from "./App.tsx";
+import App, { type CanvasMessage } from "./App.tsx";
 import { SESSION, SPLIT_RIGHT, deleteSession, embedUrl, resetSession, sessionUrl, splitUrl, type SessionSummary } from "./api.ts";
 import { SessionTabs, type TabActions } from "./SessionTabs.tsx";
 
@@ -93,6 +93,11 @@ export function Shell() {
           else setSessions((list) => list.filter((s) => s.name !== name));
         })
         .catch((err) => error((err as Error).message));
+    },
+    savePng: (name) => {
+      const msg: CanvasMessage = { type: "save-png" };
+      const target = SPLIT_RIGHT ? frames[shown.indexOf(name)]?.current?.contentWindow : window;
+      target?.postMessage(msg, location.origin);
     },
     error,
   };

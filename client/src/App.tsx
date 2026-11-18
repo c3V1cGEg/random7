@@ -54,6 +54,7 @@ import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
 import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
+import { diagramPng, download, drawnBounds } from "./snapshot.ts";
 
 const TOUCH_HIGHLIGHT_MS = 4000;
 /** Arrowhead colours for edge statuses (SVG markers can't use the CSS variables). */
@@ -87,6 +88,9 @@ const structural = (op: ChangeOp) =>
   ["add_node", "remove_node", "add_edge", "remove_edge"].includes(op.op) ||
   (op.op === "update_node" && (op.label !== undefined || op.shape !== undefined)) ||
   (op.op === "update_edge" && (op.from !== undefined || op.to !== undefined || op.label !== undefined));
+
+/** Messages the page around the canvas (the tab menu) sends to it: to itself, or into a split-view pane. */
+export type CanvasMessage = { type: "save-png" };
 
 interface AppProps {
   /** Receives the server's session list whenever it changes (the tab strip lives outside the canvas). */
@@ -897,6 +901,32 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     },
     [showToast],
   );
+
+  /** Downloads the whole diagram as a PNG, without the selection or editing handles. */
+  const savePng = useCallback(async () => {
+    const all = rf.getNodes();
+    const viewport = document.querySelector<HTMLElement>(".react-flow__viewport");
+    if (!all.length || !viewport) return showToast("Nothing to save yet: the canvas is empty");
+    const selected = [...all, ...rf.getEdges()].filter((x) => x.selected).map((x) => x.id);
+    selectOnly([]);
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    try {
+      const bounds = drawnBounds(viewport, (p) => rf.screenToFlowPosition(p, { snapToGrid: false })) ?? rf.getNodesBounds(all);
+      download(await diagramPng(viewport, bounds), `${SESSION}.png`);
+    } catch (err) {
+      showToast(`Could not make the image: ${(err as Error).message}`);
+    } finally {
+      selectOnly(selected);
+    }
+  }, [rf, selectOnly, showToast]);
+
+  useEffect(() => {
+    const onMessage = (e: MessageEvent<CanvasMessage>) => {
+      if (e.origin === location.origin && e.data?.type === "save-png") void savePng();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [savePng]);
 
   const changeDirection = useCallback(async () => {
     const s = stateRef.current;

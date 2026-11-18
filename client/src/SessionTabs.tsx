@@ -43,11 +43,13 @@ export interface TabActions {
   alone: (name: string) => void;
   clear: (name: string) => void;
   remove: (name: string) => void;
+  /** Download the diagram of a session on screen as a PNG image. */
+  savePng: (name: string) => void;
   error: (msg: string) => void;
 }
 
 /**
- * One tab per canvas session. Right-click a tab for split view, export / import, clear and delete.
+ * One tab per canvas session. Right-click a tab for split view, export / import, a PNG image, clear and delete.
  * `shown` are the sessions on screen (two in split view: left, right).
  */
 export function SessionTabs({
@@ -161,7 +163,7 @@ export function SessionTabs({
               key={s.name}
               href={sessionUrl(s.name)}
               className={`session-tab${current ? " current" : ""}${split && s.name === active ? " active" : ""}${menu?.name === s.name ? " menu-open" : ""}`}
-              title={[s.title, info, "Right-click: split view, export, import, clear, delete"].filter(Boolean).join("\n")}
+              title={[s.title, info, "Right-click: split view, export, import, PNG image, clear, delete"].filter(Boolean).join("\n")}
               onClick={(e) => {
                 if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return; // new browser tab/window
                 e.preventDefault();
@@ -209,7 +211,7 @@ export function SessionTabs({
         <div
           className="session-pop session-actions-menu"
           ref={menuRef}
-          style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 330) }}
+          style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 360) }}
           onContextMenu={(e) => e.preventDefault()}
         >
           <div className="menu-head">{menu.name}</div>
@@ -240,6 +242,14 @@ export function SessionTabs({
           </a>
           <button className="menu-item" onClick={pick(() => fileInput.current?.click())} title="Add a canvas from an exported file as a new session">
             ⤒ Import from file…
+          </button>
+          <button
+            className="menu-item"
+            disabled={!shown.includes(menu.name)}
+            onClick={pick(() => actions.savePng(menu.name))}
+            title={shown.includes(menu.name) ? "Download the whole diagram as a PNG image" : "Open this session first to save its diagram as an image"}
+          >
+            🖼 Save as PNG
           </button>
           <hr />
           <button className="menu-item" onClick={pick(() => actions.clear(menu.name))}>
