@@ -43,13 +43,13 @@ export interface TabActions {
   alone: (name: string) => void;
   clear: (name: string) => void;
   remove: (name: string) => void;
-  /** Download the diagram of a session on screen as a PNG image. */
-  savePng: (name: string) => void;
+  /** Download the diagram of a session on screen as a PNG image, or as a Visio file (flowcharts, curved or straight lines) for Miro and co. */
+  save: (name: string, format: "png" | "vsdx" | "vsdx-straight") => void;
   error: (msg: string) => void;
 }
 
 /**
- * One tab per canvas session. Right-click a tab for split view, export / import, a PNG image, clear and delete.
+ * One tab per canvas session. Right-click a tab for split view, export / import, a PNG image or Visio file, clear and delete.
  * `shown` are the sessions on screen (two in split view: left, right).
  */
 export function SessionTabs({
@@ -163,7 +163,7 @@ export function SessionTabs({
               key={s.name}
               href={sessionUrl(s.name)}
               className={`session-tab${current ? " current" : ""}${split && s.name === active ? " active" : ""}${menu?.name === s.name ? " menu-open" : ""}`}
-              title={[s.title, info, "Right-click: split view, export, import, PNG image, clear, delete"].filter(Boolean).join("\n")}
+              title={[s.title, info, "Right-click: split view, export, import, PNG / Visio, clear, delete"].filter(Boolean).join("\n")}
               onClick={(e) => {
                 if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return; // new browser tab/window
                 e.preventDefault();
@@ -211,7 +211,7 @@ export function SessionTabs({
         <div
           className="session-pop session-actions-menu"
           ref={menuRef}
-          style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 360) }}
+          style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 420) }}
           onContextMenu={(e) => e.preventDefault()}
         >
           <div className="menu-head">{menu.name}</div>
@@ -246,11 +246,33 @@ export function SessionTabs({
           <button
             className="menu-item"
             disabled={!shown.includes(menu.name)}
-            onClick={pick(() => actions.savePng(menu.name))}
+            onClick={pick(() => actions.save(menu.name, "png"))}
             title={shown.includes(menu.name) ? "Download the whole diagram as a PNG image" : "Open this session first to save its diagram as an image"}
           >
             🖼 Save as PNG
           </button>
+          {(
+            [
+              ["vsdx", "◇ Save as Visio, curved lines", "lines follow the curves drawn here, round the boxes"],
+              ["vsdx-straight", "◇ Save as Visio, straight lines", "lines go straight between the boxes, easiest to rearrange"],
+            ] as const
+          ).map(([format, label, lines]) => (
+            <button
+              key={format}
+              className="menu-item"
+              disabled={!shown.includes(menu.name) || sessions.find((s) => s.name === menu.name)?.type === "sequence"}
+              onClick={pick(() => actions.save(menu.name, format))}
+              title={
+                !shown.includes(menu.name)
+                  ? "Open this session first to save its diagram"
+                  : sessions.find((s) => s.name === menu.name)?.type === "sequence"
+                    ? "Visio export is for flowcharts"
+                    : `Download the flowchart as a Visio (.vsdx) file, laid out as here with its marks; ${lines}. Imports into Miro, Lucidchart and draw.io as editable shapes`
+              }
+            >
+              {label}
+            </button>
+          ))}
           <hr />
           <button className="menu-item" onClick={pick(() => actions.clear(menu.name))}>
             ⌫ Clear canvas

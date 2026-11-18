@@ -55,6 +55,7 @@ import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
 import { diagramPng, download, drawnBounds } from "./snapshot.ts";
+import { buildVsdx, cubics } from "./vsdx.ts";
 
 const TOUCH_HIGHLIGHT_MS = 4000;
 /** Arrowhead colours for edge statuses (SVG markers can't use the CSS variables). */
@@ -90,7 +91,7 @@ const structural = (op: ChangeOp) =>
   (op.op === "update_edge" && (op.from !== undefined || op.to !== undefined || op.label !== undefined));
 
 /** Messages the page around the canvas (the tab menu) sends to it: to itself, or into a split-view pane. */
-export type CanvasMessage = { type: "save-png" };
+export type CanvasMessage = { type: "save-png" } | { type: "save-vsdx"; lines: "curved" | "straight" };
 
 interface AppProps {
   /** Receives the server's session list whenever it changes (the tab strip lives outside the canvas). */
@@ -920,13 +921,65 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     }
   }, [rf, selectOnly, showToast]);
 
+  /** Downloads the flowchart as a Visio file (for Miro, Lucidchart, draw.io), laid out as on the canvas, marks included. */
+  const saveVsdx = useCallback((lines: "curved" | "straight") => {
+    const s = stateRef.current;
+    if (s?.type === "sequence") return showToast("Visio export is for flowcharts; save sequence diagrams as PNG");
+    if (!s?.nodes.length) return showToast("Nothing to save yet: the canvas is empty");
+    const toFlow = (x: number, y: number) => rf.screenToFlowPosition({ x, y }, { snapToGrid: false });
+    const flowBox = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      const a = toFlow(r.left, r.top);
+      const b = toFlow(r.right, r.bottom);
+      return { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y };
+    };
+    const edgePath = (id: string) =>
+      document.querySelector<SVGPathElement>(`.react-flow__edge[data-id="${CSS.escape(id)}"] path.react-flow__edge-path`);
+    const nodes = s.nodes.flatMap((n) => {
+      const node = rf.getInternalNode(n.id);
+      if (!node) return [];
+      const { x, y } = node.internals.positionAbsolute;
+      return [{ ...n, x, y, width: node.measured.width ?? 0, height: node.measured.height ?? 0 }];
+    });
+    const edges = s.edges.flatMap((e) => {
+      const path = edgePath(e.id);
+      if (!path) return [];
+      const at = (length: number) => {
+        const { x, y } = path.getPointAtLength(length);
+        return { x, y };
+      };
+      const length = path.getTotalLength();
+      const drawn = cubics(path.getAttribute("d") ?? "");
+      return [{ ...e, start: at(0), end: at(length), mid: at(length / 2), curve: drawn?.curve }];
+    });
+    const marks = s.annotations.flatMap((mark) => {
+      const ring = document.querySelector(`.ring[data-mark="${mark.id}"]`);
+      if (ring) return [{ mark, box: flowBox(ring) }];
+      // Marks on edges only have no outline on the canvas, just a chip on the edge: the note goes by its middle.
+      const edge = edges.find((e) => mark.edgeIds.includes(e.id));
+      if (!edge) return [];
+      const mid = { x: (edge.start.x + edge.end.x) / 2, y: (edge.start.y + edge.end.y) / 2 };
+      return [{ mark, box: { x: mid.x + 20, y: mid.y, width: 0, height: 0 }, outline: false }];
+    });
+    try {
+      const file = new Blob([buildVsdx({ title: s.title || SESSION, nodes, edges, marks, lines })], { type: "application/vnd.ms-visio.drawing" });
+      const url = URL.createObjectURL(file);
+      download(url, `${SESSION}.vsdx`);
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      showToast(`Could not make the Visio file: ${(err as Error).message}`);
+    }
+  }, [rf, showToast]);
+
   useEffect(() => {
     const onMessage = (e: MessageEvent<CanvasMessage>) => {
-      if (e.origin === location.origin && e.data?.type === "save-png") void savePng();
+      if (e.origin !== location.origin) return;
+      if (e.data?.type === "save-png") void savePng();
+      if (e.data?.type === "save-vsdx") saveVsdx(e.data.lines === "straight" ? "straight" : "curved");
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [savePng]);
+  }, [savePng, saveVsdx]);
 
   const changeDirection = useCallback(async () => {
     const s = stateRef.current;
@@ -1403,6 +1456,7 @@ function MarkRings({
         <div
           key={a.id}
           className={`ring kind-${a.kind ?? "none"}${active === a.id ? " active" : ""}`}
+          data-mark={a.id}
           style={{ transform: `translate(${x}px, ${y}px) rotate(${a.id % 2 ? -0.6 : 0.5}deg)`, width: w, height: h }}
         >
           <button

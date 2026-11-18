@@ -94,8 +94,8 @@ export function Shell() {
         })
         .catch((err) => error((err as Error).message));
     },
-    savePng: (name) => {
-      const msg: CanvasMessage = { type: "save-png" };
+    save: (name, format) => {
+      const msg: CanvasMessage = format === "png" ? { type: "save-png" } : { type: "save-vsdx", lines: format === "vsdx-straight" ? "straight" : "curved" };
       const target = SPLIT_RIGHT ? frames[shown.indexOf(name)]?.current?.contentWindow : window;
       target?.postMessage(msg, location.origin);
     },
