@@ -29,6 +29,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
   /** Size the user resized the node to; the height still grows if the text needs more. */
   w?: number;
   minHeight?: number;
+  /** Moved or resized between two compared revisions. */
+  moved?: boolean;
 }
 export interface CanvasEdgeData extends Record<string, unknown> {
   label?: string;
@@ -309,7 +311,7 @@ export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected 
     <div
       ref={ref}
       style={style}
-      className={`node node-${data.shape}${data.status ? ` status-${data.status}` : ""}${data.label.includes("\n") ? " has-details" : ""}${selected ? " selected" : ""}${touched.has(id) ? " touched" : ""}`}
+      className={`node node-${data.shape}${data.status ? ` status-${data.status}` : ""}${data.label.includes("\n") ? " has-details" : ""}${data.moved ? " diff-moved" : ""}${selected ? " selected" : ""}${touched.has(id) ? " touched" : ""}`}
       onDoubleClick={(e) => {
         e.stopPropagation();
         setEditingId(id);
