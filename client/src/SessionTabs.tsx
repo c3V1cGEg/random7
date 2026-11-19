@@ -46,10 +46,13 @@ export interface TabActions {
   /** Download the diagram of a session on screen as a PNG image, or as a Visio file (flowcharts, curved or straight lines) for Miro and co. */
   save: (name: string, format: "png" | "vsdx" | "vsdx-straight") => void;
   error: (msg: string) => void;
+  /** A short message for the user, such as a confirmation. */
+  notify: (msg: string) => void;
 }
 
 /**
- * One tab per canvas session. Right-click a tab for split view, export / import, a PNG image or Visio file, clear and delete.
+ * One tab per canvas session, with a button that copies its name for the agent prompt.
+ * Right-click a tab for split view, export / import, a PNG image or Visio file, clear and delete.
  * `shown` are the sessions on screen (two in split view: left, right).
  */
 export function SessionTabs({
@@ -141,6 +144,17 @@ export function SessionTabs({
   };
 
   /** Runs a menu item and closes the menu. */
+  const [copied, setCopied] = useState<string | null>(null);
+  const copyName = (name: string) =>
+    navigator.clipboard.writeText(name).then(
+      () => {
+        setCopied(name);
+        setTimeout(() => setCopied((c) => (c === name ? null : c)), 1500);
+        actions.notify(`Session name "${name}" copied — paste it into the agent prompt`);
+      },
+      () => actions.error("Clipboard not available in this browser"),
+    );
+
   const pick = (fn: () => void) => () => {
     setMenu(null);
     fn();
@@ -179,6 +193,25 @@ export function SessionTabs({
               <span className="session-name">{s.name}</span>
               {s.marks > 0 && <span className="session-marks">{s.marks}</span>}
               {side && <span className="session-side" title={`Shown on the ${side}`}>{side === "left" ? "◧" : "◨"}</span>}
+              <span
+                className={`session-copy${copied === s.name ? " copied" : ""}`}
+                role="button"
+                tabIndex={0}
+                title="Copy the session name, to tell the agent which canvas you mean"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  copyName(s.name);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  copyName(s.name);
+                }}
+              >
+                {copied === s.name ? "✓" : "⧉"}
+              </span>
             </a>
           );
         })}

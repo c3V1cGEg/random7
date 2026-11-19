@@ -354,6 +354,14 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .session-tab.current { background: var(--panel); border-color: var(--line); color: var(--ink); font-weight: 600; }
 .session-tab.active { box-shadow: inset 0 2px 0 var(--accent); }
 .session-side { color: var(--accent); font-weight: normal; }
+/* Copy the name: on the open tab, and on others while hovered. */
+.session-copy {
+  margin: -2px -4px -2px 0; padding: 0 4px; border-radius: 4px; font-size: 12px; font-weight: normal; color: var(--muted);
+  cursor: pointer; opacity: 0;
+}
+.session-tab.current .session-copy, .session-tab:hover .session-copy, .session-copy:focus-visible, .session-copy.copied { opacity: 1; }
+.session-copy:hover { background: #e2dfd5; color: var(--ink); }
+.session-copy.copied { color: #16a34a; }
 .session-type { color: var(--muted); font-weight: normal; }
 .session-marks {
   font-size: 10px; font-weight: 600; min-width: 16px; padding: 0 4px; border-radius: 8px; text-align: center;

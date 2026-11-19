@@ -36,6 +36,7 @@ export function Shell() {
   const frames = [useRef<HTMLIFrameElement>(null), useRef<HTMLIFrameElement>(null)];
   const panes = useRef<HTMLDivElement>(null);
 
+  /** Shows a message for a few seconds: errors and confirmations alike. */
   const error = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 5000);
@@ -100,6 +101,7 @@ export function Shell() {
       target?.postMessage(msg, location.origin);
     },
     error,
+    notify: error,
   };
 
   const onResize = (e: React.PointerEvent) => {
