@@ -8,6 +8,7 @@ export const ANNOTATION_KINDS = [
   "incorrect",
   "attention",
   "suggestion",
+  "decision",
   "uncertain",
   "custom",
 ] as const;

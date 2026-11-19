@@ -196,6 +196,7 @@ Make the epistemic status visible on the canvas instead of in long chat text:
 The canvas carries the logical diagram plus **marks** (annotations). The browser owns all geometry; marks reach you as meaning and references only.
 
 - A mark is `{"id": N, "nodeIds": [...], "edgeIds": [...], "elementIds": [...], "kind"?, "text"?, "by", "replies"?, "awaitingReply"?, "orphaned"?}`. Flowcharts use `nodeIds`/`edgeIds`; sequence diagrams use `elementIds` (participant, message, note, activation or block ids). Mark kinds: {{MARK_KINDS}}.
+- A `decision` mark records a choice the user has made: treat it as settled and follow it in this and later changes (do not reopen it); reply with what you changed to match it.
 - "#6" or "mark 6" means annotation id 6 in the snapshot. Read its targets and text before acting on it.
 - Numbers start at 1 per session, only increase and are never reused. Never invent or renumber marks.
 - Moving boxes in the browser changes nothing semantic. Labels, connections, shapes, statuses and marks do.

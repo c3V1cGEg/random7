@@ -8,12 +8,13 @@ export const KIND_META: Record<AnnotationKind | "none", { icon: string; label: s
   "needs-testing": { icon: "✓", label: "Test" },
   attention: { icon: "!", label: "Attention" },
   suggestion: { icon: "+", label: "Idea" },
+  decision: { icon: "◆", label: "Decision" },
   uncertain: { icon: "~", label: "Unsure" },
   custom: { icon: "•", label: "Custom" },
 };
 
 /** Kinds offered as one-click chips on the selection bar (the rest stay in the mark card). */
-export const QUICK_KINDS: Array<AnnotationKind | undefined> = [undefined, "question", "incorrect", "needs-testing", "attention", "suggestion"];
+export const QUICK_KINDS: Array<AnnotationKind | undefined> = [undefined, "question", "incorrect", "needs-testing", "attention", "suggestion", "decision"];
 
 /** Proposal statuses (colour from the `status-*` CSS classes); unmarked elements are "existing". */
 export const STATUS_META: Record<ChangeStatus, { label: string; hint: string }> = {
