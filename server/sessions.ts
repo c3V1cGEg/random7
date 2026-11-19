@@ -1,11 +1,16 @@
 // Named canvas sessions in one process. Each session is an independent CanvasStore
 // (diagram, marks, revisions, undo, layout); sessions are saved to disk when a data
 // directory is configured, so they survive server restarts.
+//
+// On disk each session is a folder: `<name>/session.json` (the session and its revision list)
+// and `<name>/revisions/<n>.json`, one file per revision. Sessions saved before revision
+// history were a single `<name>.json`; those still load, and move into a folder (keeping the
+// old file there as legacy-v1.json) the first time they are saved.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { CanvasStore, type SessionSummary, type StoredSession } from "./store.ts";
+import { CanvasStore, type SessionSummary, type StoredRevision, type StoredSession, type StoredSessionIndex } from "./store.ts";
 import { CanvasError, type ChangeEvent, type DiagramType, type EdgeEnds, type XY } from "./types.ts";
 
 export const DEFAULT_SESSION = "default";
@@ -35,10 +40,21 @@ export class SessionManager {
   constructor(private readonly dir: string | null) {
     if (dir) {
       mkdirSync(dir, { recursive: true });
-      for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+      const entries = readdirSync(dir);
+      for (const entry of entries.filter((e) => existsSync(path.join(dir, e, "session.json")))) {
+        try {
+          const index = JSON.parse(readFileSync(path.join(dir, entry, "session.json"), "utf8")) as StoredSessionIndex;
+          this.register(CanvasStore.fromIndex(index, this.loader(index.name)));
+        } catch (err) {
+          console.warn(`Skipping unreadable session folder ${entry}: ${(err as Error).message}`);
+        }
+      }
+      for (const file of entries.filter((f) => f.endsWith(".json") && statSync(path.join(dir, f)).isFile())) {
         try {
           const store = CanvasStore.fromStored(JSON.parse(readFileSync(path.join(dir, file), "utf8")) as StoredSession);
+          if (this.stores.has(store.name)) continue; // already moved into its folder
           this.register(store);
+          this.scheduleSave(store);
         } catch (err) {
           console.warn(`Skipping unreadable session file ${file}: ${(err as Error).message}`);
         }
@@ -106,7 +122,10 @@ export class SessionManager {
     this.stores.delete(store.name);
     clearTimeout(this.saveTimers.get(store.name));
     this.saveTimers.delete(store.name);
-    if (this.dir) rmSync(this.file(store.name), { force: true });
+    if (this.dir) {
+      rmSync(this.folder(store.name), { recursive: true, force: true });
+      rmSync(this.legacyFile(store.name), { force: true });
+    }
     this.events?.listChanged();
   }
 
@@ -122,6 +141,7 @@ export class SessionManager {
 
   private register(store: CanvasStore) {
     this.stores.set(store.name, store);
+    if (this.dir) store.setLoader(this.loader(store.name));
     store.subscribe((event) => {
       this.scheduleSave(store);
       this.events?.change(store, event);
@@ -133,8 +153,26 @@ export class SessionManager {
     });
   }
 
-  private file(name: string) {
+  private folder(name: string) {
+    return path.join(this.dir!, name);
+  }
+
+  private revisionFile(name: string, revision: number) {
+    return path.join(this.folder(name), "revisions", `${revision}.json`);
+  }
+
+  private legacyFile(name: string) {
     return path.join(this.dir!, `${name}.json`);
+  }
+
+  private loader(name: string) {
+    return (revision: number): StoredRevision | undefined => {
+      try {
+        return JSON.parse(readFileSync(this.revisionFile(name, revision), "utf8")) as StoredRevision;
+      } catch {
+        return undefined;
+      }
+    };
   }
 
   private scheduleSave(store: CanvasStore) {
@@ -148,16 +186,27 @@ export class SessionManager {
     );
   }
 
+  /** Writes the revisions changed since the last save, then the session index that lists them. */
   private save(store: CanvasStore) {
     if (!this.dir) return;
+    const dirty = store.takeDirty();
     try {
-      if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
-      const target = this.file(store.name);
-      const tmp = `${target}.tmp`;
-      writeFileSync(tmp, JSON.stringify(store.toStored(), null, 1));
-      renameSync(tmp, target); // atomic replace: a crash never leaves a half-written session
+      mkdirSync(path.join(this.folder(store.name), "revisions"), { recursive: true });
+      for (const revision of dirty) writeAtomic(this.revisionFile(store.name, revision), store.storedRevision(revision));
+      writeAtomic(path.join(this.folder(store.name), "session.json"), store.storedIndex());
+      const legacy = this.legacyFile(store.name);
+      if (existsSync(legacy)) renameSync(legacy, path.join(this.folder(store.name), "legacy-v1.json"));
+      store.evictSaved();
     } catch (err) {
+      store.markDirty(dirty);
       console.error(`Failed to save session ${store.name}:`, err);
     }
   }
+}
+
+/** Atomic replace: a crash never leaves a half-written file. */
+function writeAtomic(target: string, data: unknown) {
+  const tmp = `${target}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 1));
+  renameSync(tmp, target);
 }

@@ -1,9 +1,8 @@
-import type { BrowserState } from "../../server/store.ts";
-import type { SessionSummary } from "../../server/store.ts";
+import type { BrowserState, HistoryItem, RevisionInfo, SessionSummary } from "../../server/store.ts";
 import type { Operation } from "../../server/ops.ts";
 import type { ChangeEvent, EdgeEnds, EdgeEndsPatch, XY } from "../../server/types.ts";
 
-export type { BrowserState, Operation, ChangeEvent, SessionSummary };
+export type { BrowserState, HistoryItem, Operation, ChangeEvent, RevisionInfo, SessionSummary };
 
 /** The canvas session comes from the page URL: /s/<name>, or "default" at /. */
 export const SESSION = decodeURIComponent(location.pathname.match(/^\/s\/([^/]+)/)?.[1] ?? "default").toLowerCase();
@@ -31,19 +30,41 @@ async function post<T>(url: string, body: unknown = {}): Promise<T> {
   return json;
 }
 
-export const postPatch = (expectedRevision: number, operations: Operation[], undoGroup?: string) =>
-  post<PatchResponse>(`${base}/patch`, { expectedRevision, operations, ...(undoGroup ? { undoGroup } : {}) });
+/**
+ * Set while this tab previews an earlier revision: every edit sent then carries it, and the server
+ * continues from that revision (once per id, so edits sent together fork once).
+ */
+let fork: { base: number; id: string } | null = null;
+export const setFork = (f: typeof fork) => void (fork = f);
+const forked = <T extends object>(body: T) => (fork ? { ...body, fork } : body);
 
-/** Undo/redo the user's last semantic step on the server. Throws with a readable reason on conflict. */
-export const postHistory = (direction: "undo" | "redo") =>
-  post<{ revision: number; ops: Array<{ op: string } & Record<string, unknown>> }>(`${base}/${direction}`);
+export const postPatch = (expectedRevision: number, operations: Operation[], undoGroup?: string) =>
+  post<PatchResponse>(`${base}/patch`, forked({ expectedRevision, operations, ...(undoGroup ? { undoGroup } : {}) }));
+
+/** Undo/redo the user's last `steps` steps on the server. Throws with a readable reason on conflict. */
+export const postHistory = (direction: "undo" | "redo", steps = 1) =>
+  post<{ revision: number; ops: Array<{ op: string } & Record<string, unknown>>; steps: HistoryItem[] }>(`${base}/${direction}`, forked({ steps }));
+
+/** Every revision of this session, newest first. */
+export const fetchRevisions = async (): Promise<{ head: number; revisions: RevisionInfo[] }> => (await fetch(`${base}/revisions`)).json();
+
+/** An earlier revision, to preview it (its `viewing` is set). */
+export async function fetchRevision(revision: number): Promise<BrowserState> {
+  const res = await fetch(`${base}/revisions/${revision}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.message ?? `HTTP ${res.status}`);
+  return json;
+}
 
 /** Clears a session's diagram and marks (any session, so the tab menu can clear tabs that are not open). */
 export const resetSession = (name: string) => post(`/api/s/${encodeURIComponent(name)}/reset`);
 
-/** Shares node positions with other browsers and saves them with the session (never sent to agents). */
-export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}) =>
-  post(`${base}/layout`, { positions, anchors, client: CLIENT_ID });
+/**
+ * Shares node positions with other browsers and saves them with the session (never sent to agents).
+ * `record` makes it an undo step listed under that name (the user's own moves and resizes).
+ */
+export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}, record?: string) =>
+  post(`${base}/layout`, forked({ positions, anchors, client: CLIENT_ID, ...(record ? { record } : {}) }));
 
 export const createSession = (name: string, type: "flowchart" | "sequence" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
 
@@ -96,6 +117,7 @@ export interface AgentInfo {
 export type SocketMessage =
   | { type: "state"; state: BrowserState; event?: ChangeEvent }
   | { type: "layout"; positions: Record<string, XY>; anchors?: Record<string, EdgeEnds> }
+  | { type: "history"; history: BrowserState["history"] }
   | { type: "agents"; agents: AgentInfo[] }
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "error"; error: string; session: string };
@@ -203,9 +225,18 @@ export function describeOp(op: { op: string } & Record<string, unknown>): string
       return "restored the sequence diagram";
     case "reset_session":
       return "started a new empty session";
+    case "undo":
+    case "redo":
+      return `${op.op === "undo" ? "undid" : "redid"} ${op.steps ? `${op.steps} steps` : "a step"}`;
+    case "restore_revision":
+      return `went back to rev ${op.revision}`;
     case "set_direction":
       return `set direction ${op.direction}`;
     default:
       return op.op;
   }
 }
+
+/** One undo step as the undo list shows it. */
+export const describeStep = (h: HistoryItem) =>
+  h.label ?? `${h.ops[0] ? describeOp(h.ops[0]) : "change"}${h.count > 1 ? ` (+${h.count - 1} more)` : ""}`;

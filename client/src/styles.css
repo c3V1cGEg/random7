@@ -582,3 +582,58 @@ button.icon.danger:hover { color: var(--k-incorrect); }
   .sidebar { width: 200px; }
   .minimap { display: none; }
 }
+
+/* ---- undo list ---- */
+.undo-group { position: relative; display: inline-flex; }
+.toolgroup .undo-group button.undo-more { padding: 4px 3px; margin-left: -2px; font-size: 11px; color: var(--muted); }
+.toolgroup .undo-group button.undo-more.on { background: #e7eefc; color: var(--accent); }
+.undo-list {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; width: 300px; padding: 4px;
+  background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px #0002;
+  display: flex; flex-direction: column;
+}
+.undo-list-head, .undo-list-foot { font-size: 11px; color: var(--muted); padding: 4px 8px; }
+.undo-list-foot { border-top: 1px solid var(--line); margin-top: 2px; }
+.toolgroup .undo-list button {
+  display: flex; justify-content: space-between; gap: 10px; width: 100%; text-align: left; font-size: 12.5px; padding: 5px 8px;
+}
+.toolgroup .undo-list button.hit { background: #eef3fd; border-color: transparent; }
+.undo-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undo-time { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+
+/* ---- side panel tabs and revisions ---- */
+.panel-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -2px 0 0; flex-shrink: 0; }
+.panel-tabs button {
+  background: none; border: 0; border-bottom: 2px solid transparent; padding: 5px 10px 6px; font-size: 13px;
+  color: var(--muted); display: inline-flex; align-items: center; gap: 6px; margin-bottom: -1px;
+}
+.panel-tabs button:hover { color: var(--ink); }
+.panel-tabs button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.revisions > .muted { margin: 0 0 8px; }
+.rev-list { position: relative; padding-left: var(--graph); }
+.rev-graph { position: absolute; left: 0; top: 0; pointer-events: none; }
+.rev-graph .dot { fill: #7c3aed; stroke: #7c3aed55; }
+.rev-graph .dot.agent { fill: #8a6df0; }
+.rev-row {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px; width: 100%; height: 40px; padding: 0 6px;
+  background: none; border: 0; border-radius: 6px; text-align: left; font-size: 12px; min-width: 0; overflow: hidden;
+}
+.rev-row:hover { background: #f3f1ec; }
+.rev-row.current { background: #eef3fd; }
+.rev-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rev-top .who { color: var(--muted); }
+.rev-top .who.agent { color: var(--agent); }
+.rev-time { margin-left: auto; color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.rev-tag { font-size: 10.5px; border-radius: 8px; padding: 0 5px; background: #eceae4; color: var(--muted); }
+.rev-tag.latest { background: #e3f4e8; color: #23733b; }
+.rev-tag.viewing { background: #e7eefc; color: var(--accent); }
+.rev-tag.from { background: #fdf0dc; color: #9a5b00; }
+.rev-text { color: #3c434d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.preview-banner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 10; max-width: calc(100% - 40px);
+  display: flex; align-items: center; gap: 12px; padding: 7px 8px 7px 14px; border-radius: 8px; font-size: 13px;
+  background: #fff8e6; border: 1px solid #e8c56a; box-shadow: 0 2px 10px #0001;
+}
+.preview-banner button { border: 1px solid #d9b04d; background: #fff; border-radius: 6px; padding: 3px 10px; font-size: 12.5px; white-space: nowrap; }
+.preview-banner button:hover { background: #fff3cc; }

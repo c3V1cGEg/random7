@@ -281,7 +281,10 @@ app.delete("/api/s/:session", (req, res) => {
 
 app.get("/api/s/:session/state", withSession((store) => store.browserState()));
 
-const BrowserPatchSchema = PatchSchema.extend({ undoGroup: z.string().max(64).optional() });
+/** Sent with edits made while previewing an earlier revision: they continue from it. */
+const ForkSchema = z.object({ base: z.number().int().min(0), id: z.string().min(1).max(64) }).optional();
+
+const BrowserPatchSchema = PatchSchema.extend({ undoGroup: z.string().max(64).optional(), fork: ForkSchema });
 
 app.post(
   "/api/s/:session/patch",
@@ -291,8 +294,8 @@ app.post(
       res.status(400).json({ error: "invalid_patch", message: parsed.error.message });
       return undefined;
     }
-    const { expectedRevision, operations, undoGroup } = parsed.data;
-    return store.applyPatch(expectedRevision, operations, "user", undoGroup);
+    const { expectedRevision, operations, undoGroup, fork } = parsed.data;
+    return store.applyPatch(expectedRevision, operations, "user", undoGroup, undefined, fork);
   }),
 );
 
@@ -302,6 +305,9 @@ const LayoutSchema = z.object({
   /** Edge attachment points by edge id; null puts that end back to automatic. */
   anchors: z.record(z.string().max(64), z.object({ from: AnchorSchema.nullable().optional(), to: AnchorSchema.nullable().optional() })).default({}),
   client: z.string().max(64).optional(),
+  /** Makes the change one undo step, listed under this name (e.g. "Moved 2 nodes"). */
+  record: z.string().max(80).optional(),
+  fork: ForkSchema,
 });
 
 app.post(
@@ -312,14 +318,27 @@ app.post(
       res.status(400).json({ error: "invalid_layout", message: parsed.error.message });
       return undefined;
     }
-    store.setLayout(parsed.data.positions, parsed.data.client, parsed.data.anchors);
+    const { positions, client, anchors, record, fork } = parsed.data;
+    store.setLayout(positions, client, anchors, record, fork);
     return { ok: true };
   }),
 );
 
 app.post("/api/s/:session/reset", withSession((store) => store.reset("user")));
-app.post("/api/s/:session/undo", withSession((store) => store.undo()));
-app.post("/api/s/:session/redo", withSession((store) => store.redo()));
+const HistorySchema = z.object({ steps: z.number().int().min(1).max(100).default(1), fork: ForkSchema });
+for (const direction of ["undo", "redo"] as const) {
+  app.post(
+    `/api/s/:session/${direction}`,
+    withSession((store, req) => {
+      const parsed = HistorySchema.safeParse(req.body ?? {});
+      if (!parsed.success) throw new CanvasError("invalid_request", parsed.error.message);
+      return store[direction](parsed.data.steps, parsed.data.fork);
+    }),
+  );
+}
+
+app.get("/api/s/:session/revisions", withSession((store) => store.revisionList()));
+app.get("/api/s/:session/revisions/:revision", withSession((store, req) => store.revisionState(Number(req.params.revision))));
 
 // Malformed or oversized bodies get a machine-readable error instead of Express's HTML page.
 app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, next: NextFunction) => {
@@ -392,7 +411,11 @@ sessions.setEvents({
     const change = semantic.change(store, event);
     if (change) streamChange(change);
   },
-  layout: (store, positions, origin, anchors) => broadcast(store.name, { type: "layout", positions, anchors: anchors ?? {} }, origin),
+  layout: (store, positions, origin, anchors) => {
+    broadcast(store.name, { type: "layout", positions, anchors: anchors ?? {} }, origin);
+    // Moves can be undone too: every browser keeps its undo list current.
+    broadcast(store.name, { type: "history", history: store.history() });
+  },
   // The session list (for the switcher) changes on every edit; coalesce those broadcasts.
   listChanged: () => {
     for (const { name } of sessions.list()) semantic.track(sessions.get(name)); // new or imported sessions

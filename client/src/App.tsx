@@ -25,7 +25,10 @@ import {
   connectSocket,
   describeAgentTool,
   describeOp,
+  describeStep,
+  fetchRevision,
   opTarget,
+  setFork,
   SESSION,
   canvasRef,
   sessionUrl,
@@ -54,6 +57,7 @@ import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
 import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
+import { RevisionsPanel, UndoButton } from "./Revisions.tsx";
 import { diagramPng, download, drawnBounds } from "./snapshot.ts";
 import { buildVsdx, cubics } from "./vsdx.ts";
 
@@ -63,15 +67,6 @@ const STATUS_COLOR: Record<ChangeStatus, string> = { new: "#16a34a", changed: "#
 const FIT = { padding: 0.25, duration: 300, maxZoom: 1.2 } as const;
 const DEFAULT_LABEL: Record<NodeShape, string> = { action: "New step", decision: "Condition?", terminal: "Start", store: "Database" };
 
-/**
- * The browser's history interleaves semantic steps (undone on the server, which checks that
- * the agent hasn't changed the same things since) with layout-only steps (undone locally).
- */
-type HistoryStep =
-  | { kind: "semantic"; group?: string }
-  | { kind: "layout"; before: Record<string, XY>; after: Record<string, XY> }
-  | { kind: "anchor"; edge: string; end: "from" | "to"; before: Anchor | null; after: Anchor | null };
-
 const allNodeTypes = { ...nodeTypes, ...sequenceNodeTypes };
 
 const isTypingTarget = (t: EventTarget | null) =>
@@ -80,6 +75,8 @@ const isTypingTarget = (t: EventTarget | null) =>
 /** Applies a stored placement (position, and the size the user gave the node, if any) to a React Flow node. */
 const place = (n: CanvasNode, p: XY | undefined): CanvasNode =>
   p ? { ...n, position: { x: p.x, y: p.y }, width: p.w, height: undefined, data: { ...n.data, w: p.w, minHeight: p.h } } : n;
+
+const samePlace = (a: XY | undefined, b: XY | undefined) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
 const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a, gap = 20) =>
   a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
@@ -130,9 +127,16 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const pendingSelect = useRef<Set<string> | null>(null);
   /** Undo groups waiting for a follow-up edit, keyed "node:<id>" / "mark:<id>" (e.g. naming a just-created node). */
   const pendingGroups = useRef(new Map<string, string>());
-  const undoSteps = useRef<HistoryStep[]>([]);
-  const redoSteps = useRef<HistoryStep[]>([]);
-  const [, setHistoryVersion] = useState(0);
+  /**
+   * Revision shown for preview (null: the latest). Undo history lives on the server, per revision;
+   * the first edit made while previewing continues from the previewed revision (see setFork).
+   */
+  const [viewing, setViewing] = useState<number | null>(null);
+  const viewingRef = useRef<number | null>(null);
+  const forkId = useRef<string | null>(null);
+  /** The latest state from the server, kept while an earlier revision is shown. */
+  const liveRef = useRef<BrowserState | null>(null);
+  const [liveRevision, setLiveRevision] = useState(0);
   const dragStart = useRef<Record<string, XY>>({});
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const revisionWaiters = useRef<Array<() => void>>([]);
@@ -180,6 +184,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     });
   }, []);
   /** The right-hand panel with marks, activity and Mermaid; collapsed gives the canvas the full width (remembered per browser). */
+  const [panelTab, setPanelTab] = useState<"current" | "revisions">("current");
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       return localStorage.getItem("vc.sidebar") !== "0";
@@ -231,21 +236,16 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     return boxes.every((b) => b.x >= tl.x && b.y >= tl.y && b.x + b.width <= br.x && b.y + b.height <= br.y);
   }, [rf]);
 
-  const pushStep = useCallback((step: HistoryStep) => {
-    const top = undoSteps.current.at(-1);
-    redoSteps.current = [];
-    if (!(step.kind === "semantic" && step.group && top?.kind === "semantic" && top.group === step.group)) {
-      undoSteps.current.push(step);
-      if (undoSteps.current.length > 100) undoSteps.current.shift();
-    }
-    setHistoryVersion((v) => v + 1);
-  }, []);
-
-  /** Sends positions to the session's shared layout (saved, and pushed to other browsers). */
-  const shareLayout = useCallback((map: Record<string, XY>) => {
+  /**
+   * Sends positions to the session's shared layout (saved, and pushed to other browsers). `record`
+   * names the undo step for the user's own moves; automatic placement is not recorded, and while an
+   * earlier revision is previewed it stays local (only a real edit continues from that revision).
+   */
+  const shareLayout = useCallback((map: Record<string, XY>, record?: string) => {
     if (!Object.keys(map).length) return;
+    if (viewingRef.current !== null && !record) return;
     Object.assign(unsentLayout.current, map);
-    postLayout(map)
+    postLayout(map, {}, record)
       .catch(() => undefined)
       .finally(() => {
         for (const [id, p] of Object.entries(map)) if (unsentLayout.current[id] === p) delete unsentLayout.current[id];
@@ -262,12 +262,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       Object.entries(dagreLayout(s.nodes, s.edges, s.direction, sizeOf)).map(([id, p]) => [id, { ...positions.current[id], ...p }]),
     );
     Object.assign(positions.current, laid);
-    if (record) pushStep({ kind: "layout", before, after: laid });
-    shareLayout(laid);
+    shareLayout(laid, record && Object.keys(laid).some((id) => !samePlace(before[id], laid[id])) ? "Tidied the layout" : undefined);
     setNodes((nds) => nds.map((n) => place(n, positions.current[n.id])));
     setEdgeVersion((v) => v + 1);
     if (fitMode === "always" || !inView(s.nodes.map((n) => ({ ...positions.current[n.id], ...sizeOf(n) })))) setTimeout(() => fit(), 30);
-  }, [fit, inView, pushStep, shareLayout, sizeOf]);
+  }, [fit, inView, shareLayout, sizeOf]);
 
   /**
    * Tidies after an agent's structural change (nodes or edges added, removed or reconnected, labels
@@ -303,19 +302,18 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     }, TOUCH_HIGHLIGHT_MS);
   }, []);
 
+  /** `switched`: another revision is shown (preview, or back to the latest): nothing carries over. */
   const receiveState = useCallback(
-    (next: BrowserState, event?: ChangeEvent) => {
+    (next: BrowserState, event?: ChangeEvent, switched = false) => {
       const prev = stateRef.current;
-      if (!prev || prev.sessionId !== next.sessionId) {
+      if (!prev || prev.sessionId !== next.sessionId || switched) {
         positions.current = {};
         anchors.current = {};
         sizes.current = {};
         pendingGroups.current.clear();
-        undoSteps.current = [];
-        redoSteps.current = [];
         setActiveMark(null);
         setEditingId(null);
-        if (prev) setActivity([]);
+        if (prev && prev.sessionId !== next.sessionId) setActivity([]);
       }
       // The server's layout wins, except for nodes this tab is dragging or has just moved.
       for (const [id, p] of Object.entries(next.layout)) {
@@ -334,7 +332,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       // Frame a canvas when it first opens (saved positions may lie anywhere) and when a sequence timeline first appears.
       // Never on an empty canvas: React Flow would hold the fit back and zoom onto the first node the user adds.
       const empty = next.type === "sequence" ? !next.sequence.participants.length : !next.nodes.length;
-      if (!empty && (!prev || prev.sessionId !== next.sessionId || (next.type === "sequence" && prev.type !== next.type))) setTimeout(() => fit(), 80);
+      if (!empty && (!prev || switched || prev.sessionId !== next.sessionId || (next.type === "sequence" && prev.type !== next.type))) setTimeout(() => fit(), 80);
       revisionWaiters.current.splice(0).forEach((fn) => fn());
 
       if (event) {
@@ -379,8 +377,26 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   onSocketMessage.current = (m) => {
     if (m.type === "state") {
       setMissingSession(false);
-      receiveState(m.state, m.event);
-    } else if (m.type === "layout") receiveLayout(m.positions, m.anchors);
+      const prevLive = liveRef.current;
+      liveRef.current = m.state;
+      setLiveRevision(m.state.revision);
+      if (viewingRef.current === null) return void receiveState(m.state, m.event);
+      // Previewing: the edit this tab made on the previewed revision came back as the latest; or the session was cleared.
+      if ((forkId.current && m.state.fork === forkId.current) || (prevLive && prevLive.sessionId !== m.state.sessionId)) {
+        leavePreview();
+        return void receiveState(m.state, m.event, m.state.fork !== forkId.current);
+      }
+      // Otherwise keep showing the preview; edits still check against the latest revision.
+      if (stateRef.current) stateRef.current = { ...stateRef.current, revision: m.state.revision };
+      revisionWaiters.current.splice(0).forEach((fn) => fn());
+    } else if (m.type === "layout") {
+      if (viewingRef.current === null) receiveLayout(m.positions, m.anchors);
+    } else if (m.type === "history") {
+      if (viewingRef.current === null && stateRef.current) {
+        stateRef.current = { ...stateRef.current, history: m.history };
+        setState(stateRef.current);
+      }
+    }
     else if (m.type === "agents") setAgents(m.agents);
     else if (m.type === "sessions") onSessions(m.sessions);
     else if (m.type === "error" && m.error === "session_not_found") setMissingSession(true);
@@ -508,7 +524,6 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         if (!s) return undefined;
         try {
           const res = await postPatch(s.revision, operations, group);
-          if (res.undoable) pushStep({ kind: "semantic", group });
           await waitForRevision(res.revision);
           return res;
         } catch (err) {
@@ -524,17 +539,10 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       queue.current = p;
       return p;
     },
-    [pushStep, showToast],
+    [showToast],
   );
 
-  const applyPositions = useCallback((map: Record<string, XY>) => {
-    Object.assign(positions.current, map);
-    shareLayout(map);
-    setNodes((nds) => nds.map((n) => (map[n.id] ? place(n, map[n.id]) : n)));
-    setEdgeVersion((v) => v + 1);
-  }, [shareLayout]);
-
-  /** Sets (or clears) where one edge end attaches; shared and saved like positions. */
+  /** Sets (or clears) where one edge end attaches; shared, saved and undoable like positions. */
   const setAnchor = useCallback((edge: string, end: "from" | "to", anchor: Anchor | null) => {
     const ends: EdgeEnds = { ...anchors.current[edge] };
     if (anchor) ends[end] = anchor;
@@ -542,7 +550,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     if (ends.from || ends.to) anchors.current[edge] = ends;
     else delete anchors.current[edge];
     unsentAnchors.current.add(edge);
-    postLayout({}, { [edge]: { [end]: anchor } })
+    postLayout({}, { [edge]: { [end]: anchor } }, `Moved the ${end === "from" ? "start" : "end"} of edge ${edge}`)
       .catch(() => undefined)
       .finally(() => unsentAnchors.current.delete(edge));
     setEdgeVersion((v) => v + 1);
@@ -554,44 +562,64 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const edge = stateRef.current?.edges.find((e) => e.id === edgeId);
       if (!edge) return;
       if (edge[end] !== nodeId) void send([{ op: "update_edge", id: edgeId, [end]: nodeId }]);
-      const before = anchors.current[edgeId]?.[end] ?? null;
       setAnchor(edgeId, end, anchor);
-      pushStep({ kind: "anchor", edge: edgeId, end, before, after: anchor });
     },
-    [pushStep, send, setAnchor],
+    [send, setAnchor],
   );
 
-  /** Ctrl+Z / Ctrl+Shift+Z. Runs in the send queue so it never races a pending edit. */
+  /**
+   * Ctrl+Z / Ctrl+Shift+Z, or several steps at once from the undo list. The server keeps the
+   * history (per revision) and checks that the agent hasn't changed the same things since.
+   * Runs in the send queue so it never races a pending edit.
+   */
   const travel = useCallback(
-    (direction: "undo" | "redo") => {
+    (direction: "undo" | "redo", steps = 1) => {
       const run = async () => {
-        const [from, to] = direction === "undo" ? [undoSteps, redoSteps] : [redoSteps, undoSteps];
-        const step = from.current.pop();
-        if (!step) return;
+        const s = stateRef.current;
+        if (!s?.history[direction].length) return;
         setEditingId(null);
-        if (step.kind === "layout") {
-          applyPositions(direction === "undo" ? step.before : step.after);
-          to.current.push(step);
-        } else if (step.kind === "anchor") {
-          setAnchor(step.edge, step.end, direction === "undo" ? step.before : step.after);
-          to.current.push(step);
-        } else {
-          try {
-            const res = await postHistory(direction);
-            to.current.push(step);
-            await waitForRevision(res.revision);
-            const first = res.ops[0] ? describeOp(res.ops[0]) : "";
-            showToast(`${direction === "undo" ? "Undone" : "Redone"}: ${first}${res.ops.length > 1 ? ` (+${res.ops.length - 1} more)` : ""}`);
-          } catch (err) {
-            showToast(`${(err as Error).message.replace(/^can't/, "Can't")}`);
-          }
+        try {
+          const res = await postHistory(direction, steps);
+          await waitForRevision(res.revision);
+          const [first, ...rest] = res.steps;
+          showToast(`${direction === "undo" ? "Undone" : "Redone"}: ${first ? describeStep(first) : ""}${rest.length ? ` (+${rest.length} more step${rest.length > 1 ? "s" : ""})` : ""}`);
+        } catch (err) {
+          showToast(`${(err as Error).message.replace(/^can't/, "Can't")}`);
         }
-        setHistoryVersion((v) => v + 1);
       };
       queue.current = queue.current.then(run, run);
     },
-    [applyPositions, setAnchor, showToast],
+    [showToast],
   );
+
+  /** Shows an earlier revision (only in this tab); the latest one returns to live editing. */
+  const openRevision = useCallback(
+    async (revision: number) => {
+      const live = liveRef.current;
+      if (!live || revision === live.revision) return leavePreview(true);
+      try {
+        const preview = await fetchRevision(revision);
+        forkId.current = crypto.randomUUID();
+        setFork({ base: revision, id: forkId.current });
+        viewingRef.current = revision;
+        setViewing(revision);
+        receiveState(preview, undefined, true);
+      } catch (err) {
+        showToast((err as Error).message);
+      }
+    },
+    [receiveState, showToast],
+  );
+
+  /** Back to the latest revision; `show` redraws it (not needed when it is about to arrive). */
+  function leavePreview(show = false) {
+    if (viewingRef.current === null) return;
+    viewingRef.current = null;
+    forkId.current = null;
+    setFork(null);
+    setViewing(null);
+    if (show && liveRef.current) receiveState(liveRef.current, undefined, true);
+  }
 
   const selectOnly = useCallback((ids: string[]) => {
     const set = new Set(ids);
@@ -677,6 +705,13 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     setNodes((nds) => applyNodeChanges(visual, nds));
   }, []);
 
+  /** Undo-list name of a move: the step's label, or how many steps moved. */
+  const movedText = useCallback((ids: string[]) => {
+    const node = ids.length === 1 ? stateRef.current?.nodes.find((n) => n.id === ids[0]) : undefined;
+    const name = node ? `"${node.label.length > 30 ? node.label.slice(0, 29) + "…" : node.label}"`.replace(/\n/g, " ") : `${ids.length} nodes`;
+    return `Moved ${name}`;
+  }, []);
+
   const onNodeDragStart = useCallback((_: unknown, __: unknown, dragged: CanvasNode[]) => {
     dragStart.current = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
     dragged.forEach((n) => dragging.current.add(n.id));
@@ -688,12 +723,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const after = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
       dragged.forEach((n) => dragging.current.delete(n.id));
       if (dragged.some((n) => before[n.id] && (before[n.id].x !== n.position.x || before[n.id].y !== n.position.y))) {
-        pushStep({ kind: "layout", before, after });
-        shareLayout(after);
+        shareLayout(after, movedText(Object.keys(after)));
         setEdgeVersion((v) => v + 1);
       }
     },
-    [pushStep, shareLayout],
+    [movedText, shareLayout],
   );
 
   /** Dragging a mark's bubble moves every element it wraps; `delta` null ends the drag (one undo step). */
@@ -715,25 +749,22 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       ids.forEach((id) => dragging.current.delete(id));
       const after = Object.fromEntries(Object.keys(before).map((id) => [id, { ...positions.current[id] }]));
       if (Object.keys(before).some((id) => before[id].x !== after[id].x || before[id].y !== after[id].y)) {
-        pushStep({ kind: "layout", before, after });
-        shareLayout(after);
+        shareLayout(after, movedText(Object.keys(after)));
         setEdgeVersion((v) => v + 1);
       }
     },
-    [pushStep, shareLayout],
+    [movedText, shareLayout],
   );
 
   /** End of a resize (drag a corner of a selected node): the size is layout, shared and undoable like a move. */
   const resizeNode = useCallback(
     (id: string, r: { x: number; y: number; width: number; height: number }) => {
-      const before = { ...positions.current[id] };
       const after = { x: r.x, y: r.y, w: Math.round(r.width), h: Math.round(r.height) };
       positions.current[id] = after;
-      pushStep({ kind: "layout", before: { [id]: before }, after: { [id]: after } });
-      shareLayout({ [id]: after });
+      shareLayout({ [id]: after }, movedText([id]).replace(/^Moved/, "Resized"));
       setNodes((nds) => nds.map((n) => (n.id === id ? place(n, after) : n)));
     },
-    [pushStep, shareLayout],
+    [movedText, shareLayout],
   );
 
   const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
@@ -1187,10 +1218,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             </div>
           )}
           <div className="toolgroup">
-            <button onClick={() => travel("undo")} disabled={!undoSteps.current.length} title="Undo your last change (Ctrl+Z)">
-              ↶ Undo
-            </button>
-            <button onClick={() => travel("redo")} disabled={!redoSteps.current.length} title="Redo (Ctrl+Shift+Z)">
+            <UndoButton items={state?.history.undo ?? []} onUndo={(steps) => travel("undo", steps)} />
+            <button onClick={() => travel("redo")} disabled={!state?.history.redo.length} title="Redo (Ctrl+Shift+Z)">
               ↷
             </button>
           </div>
@@ -1358,6 +1387,14 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               )
             )}
             <ContextHint nodes={selectedNodes.length} edges={selectedEdges.length} editing={!!editingId} empty={!nodes.length} sequence={isSeq} />
+            {viewing !== null && (
+              <div className="preview-banner">
+                <span>
+                  Viewing <b>revision {viewing}</b> (latest is {liveRevision}). An edit here continues from it as revision {liveRevision + 1}.
+                </span>
+                <button onClick={() => leavePreview(true)}>Back to latest</button>
+              </div>
+            )}
             {toast && (
               <div className="toast" onClick={() => setToast(null)}>
                 {toast}
@@ -1367,7 +1404,16 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
 
           {sidebarOpen && (
             <aside className="sidebar">
-              {state && (
+              <div className="panel-tabs" role="tablist">
+                <button role="tab" aria-selected={panelTab === "current"} className={panelTab === "current" ? "on" : ""} onClick={() => setPanelTab("current")}>
+                  {viewing === null ? "Current" : `Revision ${viewing}`}
+                </button>
+                <button role="tab" aria-selected={panelTab === "revisions"} className={panelTab === "revisions" ? "on" : ""} onClick={() => setPanelTab("revisions")}>
+                  Revisions <span className="count">{liveRevision}</span>
+                </button>
+              </div>
+              {panelTab === "revisions" && <RevisionsPanel head={liveRevision} viewing={viewing} onOpen={(r) => void openRevision(r)} />}
+              {panelTab === "current" && state && (
                 <MarksPanel
                   state={state}
                   activeMark={activeMark}
@@ -1381,8 +1427,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                   onCopy={copy}
                 />
               )}
-              <ActivityPanel items={activity} onReveal={reveal} />
-              <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />
+              {panelTab === "current" && <ActivityPanel items={activity} onReveal={reveal} />}
+              {panelTab === "current" && <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />}
             </aside>
           )}
         </div>

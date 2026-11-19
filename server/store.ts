@@ -65,14 +65,73 @@ export interface BrowserState {
   edges: GraphEdge[];
   annotations: Annotation[];
   diagram: string;
-  /** Sizes of the user's undo/redo stacks. */
-  history: { undo: number; redo: number };
+  /** The user's undo/redo steps at this revision, oldest first (the last one is undone next). */
+  history: { undo: HistoryItem[]; redo: HistoryItem[] };
   /** Editor-only node positions (also kept for deleted nodes, so undo restores them in place). */
   layout: Record<string, XY>;
   anchors: Record<string, EdgeEnds>;
+  /** Set when this is an earlier revision shown for preview; `revision` is still the latest. */
+  viewing?: number;
+  /** Id of the last fork (an edit made on an earlier revision), so the browser that made it can follow. */
+  fork?: string;
 }
 
-/** On-disk form of a session. Undo history and the change log are intentionally not persisted. */
+/** One undo/redo step as the editor lists it. */
+export interface HistoryItem {
+  /** For layout steps (moves, resizes, tidying); semantic steps are described by `ops`. */
+  label?: string;
+  /** The first few changes of the step, and how many it made in all. */
+  ops: ChangeOp[];
+  count: number;
+  at: string;
+}
+
+/** One entry of the revision list: every committed change is a revision, made from `parent`. */
+export interface RevisionInfo {
+  revision: number;
+  /** The revision this one was made from: the one before it, or an earlier one the user went back to (null: the first kept). */
+  parent: number | null;
+  at: string;
+  source: ChangeSource;
+  actor?: string;
+  ops: ChangeOp[];
+  count: number;
+}
+
+/** An edit made while previewing revision `base`: it continues from there. `id` makes repeated requests fork once. */
+export interface Fork {
+  base: number;
+  id: string;
+}
+
+/** One revision on disk (`<session>/revisions/<n>.json`): everything needed to view it or continue from it. */
+export interface StoredRevision extends RevisionInfo {
+  model: StoredModel;
+  layout: Record<string, XY>;
+  anchors: Record<string, EdgeEnds>;
+  undo: StoredEntry[];
+  redo: StoredEntry[];
+}
+
+/** `<session>/session.json`: the session and its revision list; the revisions themselves are separate files. */
+export interface StoredSessionIndex {
+  format: 2;
+  name: string;
+  title?: string;
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  head: number;
+  sessionStartRevision: number;
+  revisions: RevisionInfo[];
+}
+
+type StoredModel = StoredSession["model"];
+
+/**
+ * Single-file form of a session: the export file, and how sessions were saved before revision
+ * history (one `<name>.json` each; still read). Undo history and revisions are not part of it.
+ */
 export interface StoredSession {
   version: 1;
   name: string;
@@ -112,6 +171,8 @@ export interface SessionSummary {
 export interface UndoResult {
   revision: number;
   ops: ChangeOp[];
+  /** The steps undone (or redone), in the order they were applied. */
+  steps: HistoryItem[];
 }
 
 /** Before/after values of every element one user action touched (undefined = absent). */
@@ -125,13 +186,52 @@ interface Delta {
   direction?: [Direction, Direction];
 }
 
-interface HistoryEntry {
-  /** Consecutive patches with the same group undo as one step (e.g. create node + connect + name it). */
-  group?: string;
-  delta: Delta;
+/** Node positions and edge ends before and after a layout step (null = none). */
+interface LayoutStep {
+  before: Record<string, XY | null>;
+  after: Record<string, XY | null>;
+  anchorsBefore: Record<string, EdgeEnds | null>;
+  anchorsAfter: Record<string, EdgeEnds | null>;
 }
 
-const HISTORY_LIMIT = 100;
+/** Entries are never changed once made: revisions share them. */
+interface HistoryEntry extends HistoryItem {
+  /** Consecutive patches with the same group undo as one step (e.g. create node + connect + name it). */
+  group?: string;
+  delta?: Delta;
+  layout?: LayoutStep;
+}
+
+type StoredDelta = {
+  sequence?: [Sequence, Sequence];
+  type?: [DiagramType, DiagramType];
+  direction?: [Direction, Direction];
+  nodes: Array<[string, GraphNode | null, GraphNode | null]>;
+  edges: Array<[string, GraphEdge | null, GraphEdge | null]>;
+  annotations: Array<[number, Annotation | null, Annotation | null]>;
+};
+type StoredEntry = Omit<HistoryEntry, "delta"> & { delta?: StoredDelta };
+
+/** What one revision holds; the model object is never changed after its commit, so revisions share it. */
+interface RevisionData {
+  model: Model;
+  layout: Map<string, XY>;
+  anchors: Map<string, EdgeEnds>;
+  undo: HistoryEntry[];
+  redo: HistoryEntry[];
+}
+
+/** `data` is loaded from disk on demand for revisions not kept in memory. */
+interface Revision extends RevisionInfo {
+  data?: RevisionData;
+}
+
+/** Undo steps kept per revision. */
+export const HISTORY_LIMIT = 15;
+/** Changes listed per revision and undo step (the rest are counted). */
+const SUMMARY_OPS = 3;
+/** Revisions whose content stays in memory once saved (older ones are read back from disk when opened). */
+const REVISIONS_IN_MEMORY = 10;
 
 export interface PatchResult {
   revision: number;
@@ -199,12 +299,23 @@ export class CanvasStore {
   /** Undo/redo covers the user's own edits only; agent edits are never undone by Ctrl+Z. */
   private undoStack: HistoryEntry[] = [];
   private redoStack: HistoryEntry[] = [];
+  /** Every revision, oldest first; the last one is the current state. */
+  private revisions: Revision[] = [];
+  /** Revisions changed since the last save. */
+  private dirty = new Set<number>();
+  /** Reads a revision back from disk (set by the session manager when sessions are saved). */
+  private loader?: (revision: number) => StoredRevision | undefined;
+  /** Set while an edit on an earlier revision is being applied: the next commit continues from it. */
+  private pendingFork?: Fork;
+  private lastFork?: string;
 
   constructor(name = "default", title?: string, type: DiagramType = "flowchart") {
     this.name = name;
     this.title = title;
     this.model.type = type;
     this.createdAt = this.updatedAt = new Date().toISOString();
+    this.revisions.push({ revision: 0, parent: null, at: this.createdAt, source: "user", ops: [], count: 0 });
+    this.syncHead();
   }
 
   get revision(): number {
@@ -237,7 +348,16 @@ export class CanvasStore {
     return Object.fromEntries(this.anchorMap);
   }
 
-  setLayout(positions: Record<string, XY>, origin?: string, anchors: Record<string, EdgeEndsPatch> = {}): void {
+  /**
+   * `record` names an undo step for this change (a move or resize by the user); without it the change
+   * is not undoable (automatic placement). `fork`: made while previewing an earlier revision.
+   */
+  setLayout(positions: Record<string, XY>, origin?: string, anchors: Record<string, EdgeEndsPatch> = {}, record?: string, fork?: Fork): void {
+    this.withFork(fork, () => this.layoutChange(positions, origin, anchors, record), true);
+  }
+
+  private layoutChange(positions: Record<string, XY>, origin: string | undefined, anchors: Record<string, EdgeEndsPatch>, record?: string) {
+    const step: LayoutStep = { before: {}, after: {}, anchorsBefore: {}, anchorsAfter: {} };
     const accepted: Record<string, XY> = {};
     for (const [id, p] of Object.entries(positions)) {
       if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
@@ -247,11 +367,14 @@ export class CanvasStore {
       const w = size(p.w);
       const h = size(p.h);
       if (w && h) Object.assign(accepted[id], { w, h });
+      step.before[id] = this.layoutMap.get(id) ?? null;
+      step.after[id] = accepted[id];
       this.layoutMap.set(id, accepted[id]);
     }
     const ends: Record<string, EdgeEnds> = {};
     for (const [id, patch] of Object.entries(anchors)) {
       if (this.model.type !== "flowchart" || (!this.model.edges.has(id) && !this.anchorMap.has(id))) continue;
+      step.anchorsBefore[id] = this.anchorMap.get(id) ?? null;
       const next: EdgeEnds = { ...this.anchorMap.get(id) };
       for (const end of ["from", "to"] as const) {
         const a = patch?.[end];
@@ -260,10 +383,16 @@ export class CanvasStore {
       }
       if (next.from || next.to) this.anchorMap.set(id, next);
       else this.anchorMap.delete(id);
+      step.anchorsAfter[id] = next.from || next.to ? next : null;
       ends[id] = next;
     }
     if (!Object.keys(accepted).length && !Object.keys(ends).length) return;
     this.touch();
+    if (record && (!same(step.before, step.after) || !same(step.anchorsBefore, step.anchorsAfter))) {
+      this.redoStack = [];
+      this.pushUndo({ label: record.slice(0, 80), ops: [], count: 0, at: this.updatedAt, layout: step });
+    }
+    this.syncHead();
     for (const fn of this.layoutListeners) fn(accepted, origin, ends);
   }
 
@@ -281,21 +410,41 @@ export class CanvasStore {
   }
 
   browserState(): BrowserState {
+    return this.stateOf({ model: this.model, layout: this.layoutMap, anchors: this.anchorMap, undo: this.undoStack, redo: this.redoStack });
+  }
+
+  history(): BrowserState["history"] {
+    return { undo: this.undoStack.map(historyItem), redo: this.redoStack.map(historyItem) };
+  }
+
+  /** An earlier revision as the editor shows it for preview (with that revision's undo steps). */
+  revisionState(revision: number): BrowserState {
+    return { ...this.stateOf(this.revisionData(revision)), viewing: revision };
+  }
+
+  /** Every revision, newest first. */
+  revisionList(): { head: number; revisions: RevisionInfo[] } {
+    return { head: this._revision, revisions: this.revisions.map(({ data: _, ...info }) => info).reverse() };
+  }
+
+  private stateOf(d: RevisionData): BrowserState {
+    const m = d.model;
     return {
       session: this.name,
       ...(this.title ? { title: this.title } : {}),
       sessionId: this._sessionId,
       revision: this._revision,
-      type: this.model.type,
-      sequence: this.model.sequence,
-      direction: this.model.direction,
-      nodes: [...this.model.nodes.values()],
-      edges: [...this.model.edges.values()],
-      annotations: this.annotationList(),
-      diagram: this.mermaid(),
-      history: { undo: this.undoStack.length, redo: this.redoStack.length },
-      layout: this.layout(),
-      anchors: this.anchors(),
+      type: m.type,
+      sequence: m.sequence,
+      direction: m.direction,
+      nodes: [...m.nodes.values()],
+      edges: [...m.edges.values()],
+      annotations: [...m.annotations.values()].sort((a, b) => a.id - b.id),
+      diagram: mermaidOf(m),
+      history: { undo: d.undo.map(historyItem), redo: d.redo.map(historyItem) },
+      layout: Object.fromEntries(d.layout),
+      anchors: Object.fromEntries(d.anchors),
+      ...(this.lastFork ? { fork: this.lastFork } : {}),
     };
   }
 
@@ -312,7 +461,6 @@ export class CanvasStore {
   }
 
   toStored(): StoredSession {
-    const m = this.model;
     return {
       version: 1,
       name: this.name,
@@ -321,24 +469,16 @@ export class CanvasStore {
       revision: this._revision,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
-      model: {
-        type: m.type,
-        ...(m.type === "sequence" ? { sequence: m.sequence, seqCounters: m.seqCounters } : {}),
-        direction: m.direction,
-        nodes: [...m.nodes.values()],
-        edges: [...m.edges.values()],
-        annotations: [...m.annotations.values()],
-        nextAnnotationId: m.nextAnnotationId,
-        nodeCounter: m.nodeCounter,
-        edgeCounter: m.edgeCounter,
-        usedIds: [...m.usedIds],
-      },
+      model: storeModel(this.model),
       layout: this.layout(),
       anchors: this.anchors(),
     };
   }
 
-  /** Restores a saved session. The change log starts empty, so agents are told to re-read the snapshot. */
+  /**
+   * Restores a single-file session (an export, or a session saved before revision history): it
+   * starts with one revision. The change log starts empty, so agents are told to re-read the snapshot.
+   */
   static fromStored(data: StoredSession): CanvasStore {
     if (data?.version !== 1 || typeof data.name !== "string") throw new Error("unsupported session file");
     const store = new CanvasStore(data.name, data.title);
@@ -346,31 +486,151 @@ export class CanvasStore {
     store.updatedAt = data.updatedAt;
     store._sessionId = data.sessionId;
     store._revision = store.sessionStartRevision = data.revision;
-    const m = data.model;
-    store.model = {
-      type: m.type === "sequence" ? "sequence" : "flowchart",
-      sequence: m.sequence ?? emptySequence(),
-      seqCounters: m.seqCounters ?? {},
-      direction: m.direction === "LR" ? "LR" : "TD",
-      nodes: new Map(m.nodes.map((n) => [n.id, n])),
-      edges: new Map(m.edges.map((e) => [e.id, e])),
-      annotations: new Map(m.annotations.map((a) => [a.id, a])),
-      nextAnnotationId: m.nextAnnotationId,
-      nodeCounter: m.nodeCounter,
-      edgeCounter: m.edgeCounter,
-      usedIds: new Set(m.usedIds),
-    };
-    const broken = integrityProblems(store.model);
-    if (broken.length) throw new Error(broken[0]);
+    store.model = loadModel(data.model);
     store.layoutMap = new Map(Object.entries(data.layout ?? {}));
     store.anchorMap = new Map(Object.entries(data.anchors ?? {}));
+    store.dirty.clear();
+    store.revisions = [{ revision: data.revision, parent: null, at: data.updatedAt, source: "user", ops: [], count: 0 }];
+    store.syncHead();
     return store;
   }
 
+  /** Restores a session saved with revision history; `loader` reads a revision file. */
+  static fromIndex(index: StoredSessionIndex, loader: (revision: number) => StoredRevision | undefined): CanvasStore {
+    if (index?.format !== 2 || typeof index.name !== "string" || !Array.isArray(index.revisions)) throw new Error("unsupported session index");
+    const store = new CanvasStore(index.name, index.title);
+    store.createdAt = index.createdAt;
+    store.updatedAt = index.updatedAt;
+    store._sessionId = index.sessionId;
+    store._revision = index.head;
+    store.sessionStartRevision = index.sessionStartRevision ?? index.head;
+    store.loader = loader;
+    store.dirty.clear();
+    store.revisions = index.revisions.map((r) => ({ ...r }));
+    if (store.revisions.at(-1)?.revision !== index.head) throw new Error("the revision list does not end at the current revision");
+    const head = store.revisionData(index.head);
+    store.model = head.model;
+    store.layoutMap = new Map(head.layout);
+    store.anchorMap = new Map(head.anchors);
+    store.undoStack = [...head.undo];
+    store.redoStack = [...head.redo];
+    return store;
+  }
+
+  storedIndex(): StoredSessionIndex {
+    return {
+      format: 2,
+      name: this.name,
+      ...(this.title ? { title: this.title } : {}),
+      sessionId: this._sessionId,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      head: this._revision,
+      sessionStartRevision: this.sessionStartRevision,
+      revisions: this.revisionList().revisions.reverse(),
+    };
+  }
+
+  storedRevision(revision: number): StoredRevision {
+    const rev = this.findRevision(revision);
+    const d = this.revisionData(revision);
+    const { data: _, ...info } = rev;
+    return {
+      ...info,
+      model: storeModel(d.model),
+      layout: Object.fromEntries(d.layout),
+      anchors: Object.fromEntries(d.anchors),
+      undo: d.undo.map(storeEntry),
+      redo: d.redo.map(storeEntry),
+    };
+  }
+
+  setLoader(loader: (revision: number) => StoredRevision | undefined) {
+    this.loader = loader;
+  }
+
+  /** Revisions changed since the last call (to be written to disk). */
+  takeDirty(): number[] {
+    const out = [...this.dirty];
+    this.dirty.clear();
+    return out;
+  }
+
+  markDirty(revisions: number[]) {
+    revisions.forEach((r) => this.dirty.add(r));
+  }
+
+  /** After a save: keeps only the latest revisions in memory; the others are read back from disk when opened. */
+  evictSaved() {
+    if (!this.loader) return;
+    for (const rev of this.revisions.slice(0, -REVISIONS_IN_MEMORY)) if (!this.dirty.has(rev.revision)) delete rev.data;
+  }
+
+  private findRevision(revision: number): Revision {
+    const rev = this.revisions.find((r) => r.revision === revision);
+    if (!rev) throw new CanvasError("revision_not_found", `no revision ${revision} in session "${this.name}"`);
+    return rev;
+  }
+
+  private revisionData(revision: number): RevisionData {
+    const rev = this.findRevision(revision);
+    if (!rev.data) {
+      const stored = this.loader?.(revision);
+      if (!stored) throw new CanvasError("revision_not_found", `revision ${revision} of session "${this.name}" can no longer be read`);
+      rev.data = {
+        model: loadModel(stored.model),
+        layout: new Map(Object.entries(stored.layout ?? {})),
+        anchors: new Map(Object.entries(stored.anchors ?? {})),
+        undo: (stored.undo ?? []).map(loadEntry),
+        redo: (stored.redo ?? []).map(loadEntry),
+      };
+    }
+    return rev.data;
+  }
+
+  /** The current state is the latest revision's content (copies: the live maps and stacks change in place). */
+  private syncHead() {
+    const head = this.revisions.at(-1)!;
+    head.data = { model: this.model, layout: new Map(this.layoutMap), anchors: new Map(this.anchorMap), undo: [...this.undoStack], redo: [...this.redoStack] };
+    this.dirty.add(head.revision);
+  }
+
+  /**
+   * Runs an edit made while previewing an earlier revision: the content, layout and undo steps of
+   * that revision come back, and the commit that follows records it as the parent. Requests that
+   * carry the same fork id after the first one apply to the latest revision as usual. `commitFirst`
+   * records the fork as its own revision before the edit (for layout changes, which have none).
+   */
+  private withFork<T>(fork: Fork | undefined, run: () => T, commitFirst = false): T {
+    if (!fork || fork.id === this.lastFork) return run();
+    const base = this.revisionData(fork.base);
+    const saved = { model: this.model, layout: this.layoutMap, anchors: this.anchorMap, undo: this.undoStack, redo: this.redoStack };
+    this.model = forkModel(this.model, base.model);
+    this.layoutMap = new Map([...this.layoutMap, ...base.layout]);
+    this.anchorMap = new Map(base.anchors);
+    this.undoStack = [...base.undo];
+    this.redoStack = [...base.redo];
+    this.pendingFork = fork;
+    try {
+      if (commitFirst) this.commit("user", []);
+      const result = run();
+      if (this.pendingFork) this.commit("user", []);
+      return result;
+    } catch (err) {
+      if (this.pendingFork) {
+        this.pendingFork = undefined;
+        this.model = saved.model;
+        this.layoutMap = saved.layout;
+        this.anchorMap = saved.anchors;
+        this.undoStack = saved.undo;
+        this.redoStack = saved.redo;
+      }
+      throw err;
+    }
+  }
+
   mermaid(): string {
-    const m = this.model;
-    if (m.type === "sequence") return sequenceToMermaid(m.sequence);
-    return toMermaid({ direction: m.direction, nodes: [...m.nodes.values()], edges: [...m.edges.values()] });
+    return mermaidOf(this.model);
   }
 
   /** One mark as it is now (undefined once deleted). */
@@ -401,12 +661,22 @@ export class CanvasStore {
     if (sinceRevision < this._revision && sinceRevision + 1 < oldest) {
       return { ...base, snapshotRequired: true, reason: "change history for that revision has expired; call canvas_get_snapshot" };
     }
-    return { ...base, changes: this.events.filter((e) => e.revision > sinceRevision) };
+    const changes = this.events.filter((e) => e.revision > sinceRevision);
+    const restore = changes.findLast((e) => e.ops[0]?.op === "restore_revision");
+    if (restore) {
+      const from = restore.ops[0].revision;
+      return { ...base, snapshotRequired: true, reason: `the user went back to revision ${from} and continued from it; call canvas_get_snapshot` };
+    }
+    return { ...base, changes };
   }
 
   // --- writes ----------------------------------------------------------------
 
-  applyPatch(expectedRevision: number, ops: Operation[], source: ChangeSource, undoGroup?: string, actor?: string): PatchResult {
+  applyPatch(expectedRevision: number, ops: Operation[], source: ChangeSource, undoGroup?: string, actor?: string, fork?: Fork): PatchResult {
+    return this.withFork(fork, () => this.patch(expectedRevision, ops, source, undoGroup, actor));
+  }
+
+  private patch(expectedRevision: number, ops: Operation[], source: ChangeSource, undoGroup?: string, actor?: string): PatchResult {
     this.checkRevision(expectedRevision);
     if (ops.length === 0) throw new CanvasError("invalid_patch", "operations must not be empty");
     if (ops.length > LIMITS.opsPerPatch) throw new CanvasError("invalid_patch", `at most ${LIMITS.opsPerPatch} operations per patch`);
@@ -433,7 +703,7 @@ export class CanvasStore {
     });
     enforceLimits(draft);
 
-    const undoable = source === "user" ? this.recordHistory(diffModels(this.model, draft), undoGroup) : undefined;
+    const undoable = source === "user" ? this.recordHistory(diffModels(this.model, draft), log, undoGroup) : undefined;
     this.model = draft;
     this.commit(source, log, actor);
     return {
@@ -559,58 +829,105 @@ export class CanvasStore {
     this.sessionStartRevision = this._revision;
     const event: ChangeEvent = { revision: this._revision, source, ops: [{ op: "reset_session" }] };
     this.events.push(event);
+    this.pushRevision(event, this._revision - 1);
     this.emit(event);
     return { sessionId: this._sessionId, revision: this._revision };
   }
 
   // --- undo / redo -----------------------------------------------------------
 
-  undo(): UndoResult {
-    return this.travel(this.undoStack, this.redoStack, "undo");
+  /** Undoes the last `steps` steps at once (one revision); `fork`: pressed while previewing an earlier revision. */
+  undo(steps = 1, fork?: Fork): UndoResult {
+    return this.withFork(fork, () => this.travel("undo", steps));
   }
 
-  redo(): UndoResult {
-    return this.travel(this.redoStack, this.undoStack, "redo");
+  redo(steps = 1, fork?: Fork): UndoResult {
+    return this.withFork(fork, () => this.travel("redo", steps));
   }
 
   /**
-   * Restores one history step, but only if every element it touched is still exactly as that
-   * step left it. If the agent changed any of them since, the step is dropped and a conflict
-   * is reported instead of silently overwriting the agent's work.
+   * Restores history steps, but only if every element they touched is still exactly as those
+   * steps left it. If the agent changed any of them since, the conflicting step is dropped and a
+   * conflict is reported instead of silently overwriting the agent's work. Layout steps (moves)
+   * change no revision; when only those are undone, nothing is committed.
    */
-  private travel(from: HistoryEntry[], to: HistoryEntry[], direction: "undo" | "redo"): UndoResult {
-    const entry = from.pop();
-    if (!entry) throw new CanvasError("nothing_to_" + direction, `nothing to ${direction}`);
+  private travel(direction: "undo" | "redo", steps: number): UndoResult {
+    const [from, to] = direction === "undo" ? [this.undoStack, this.redoStack] : [this.redoStack, this.undoStack];
+    if (!from.length) throw new CanvasError("nothing_to_" + direction, `nothing to ${direction}`);
+    const taken = from.slice(-Math.min(Math.max(1, Math.floor(steps)), from.length)).reverse();
     const draft = cloneModel(this.model);
-    const changed = applyDelta(draft, entry.delta, direction === "undo");
-    if (changed.conflicts.length) {
-      throw new CanvasError(
-        `${direction}_conflict`,
-        `can't ${direction}: ${changed.conflicts.slice(0, 3).join(", ")} changed since (probably by the agent)`,
-        { ids: changed.conflicts },
-      );
+    const layout = new Map(this.layoutMap);
+    const anchors = new Map(this.anchorMap);
+    const moved: Record<string, XY> = {};
+    const ends: Record<string, EdgeEnds> = {};
+    const ops: ChangeOp[] = [];
+    for (const entry of taken) {
+      if (entry.delta) {
+        const changed = applyDelta(draft, entry.delta, direction === "undo");
+        if (changed.conflicts.length) {
+          this.dropStep(from, entry);
+          throw new CanvasError(
+            `${direction}_conflict`,
+            `can't ${direction}: ${changed.conflicts.slice(0, 3).join(", ")} changed since (probably by the agent)`,
+            { ids: changed.conflicts },
+          );
+        }
+        ops.push(...changed.ops);
+      }
+      if (entry.layout) {
+        const [positions, edgeEnds] = direction === "undo" ? [entry.layout.before, entry.layout.anchorsBefore] : [entry.layout.after, entry.layout.anchorsAfter];
+        for (const [id, p] of Object.entries(positions)) {
+          if (p) layout.set(id, (moved[id] = p));
+          else layout.delete(id);
+        }
+        for (const [id, e] of Object.entries(edgeEnds)) {
+          if (e) anchors.set(id, e);
+          else anchors.delete(id);
+          ends[id] = e ?? {};
+        }
+      }
     }
     const broken = integrityProblems(draft);
     if (broken.length) {
+      this.dropStep(from, taken.at(-1)!);
       throw new CanvasError(`${direction}_conflict`, `can't ${direction}: ${broken[0]}`, { ids: broken });
     }
-    to.push(entry);
-    this.model = draft;
-    this.commit("user", [{ op: direction }, ...changed.ops]);
-    return { revision: this._revision, ops: changed.ops };
+    from.splice(from.length - taken.length);
+    to.push(...taken);
+    this.layoutMap = layout;
+    this.anchorMap = anchors;
+    if (taken.some((e) => e.delta)) {
+      this.model = draft;
+      this.commit("user", [{ op: direction, ...(taken.length > 1 ? { steps: taken.length } : {}) }, ...ops]);
+    } else {
+      this.touch();
+      this.syncHead();
+    }
+    for (const fn of this.layoutListeners) fn(moved, undefined, ends);
+    return { revision: this._revision, ops, steps: taken.map(historyItem) };
   }
 
-  private recordHistory(delta: Delta, group?: string): boolean {
+  private dropStep(stack: HistoryEntry[], entry: HistoryEntry) {
+    stack.splice(stack.indexOf(entry), 1);
+    this.syncHead();
+  }
+
+  private recordHistory(delta: Delta, log: ChangeOp[], group?: string): boolean {
     if (isEmptyDelta(delta)) return false;
     this.redoStack = [];
     const top = this.undoStack.at(-1);
-    if (group && top?.group === group) {
-      top.delta = mergeDeltas(top.delta, delta);
+    if (group && top?.group === group && top.delta) {
+      const ops = [...top.ops, ...log];
+      this.undoStack[this.undoStack.length - 1] = { ...top, delta: mergeDeltas(top.delta, delta), ops: ops.slice(0, SUMMARY_OPS), count: top.count + log.length };
       return true;
     }
-    this.undoStack.push({ group, delta });
-    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.pushUndo({ ...(group ? { group } : {}), delta, ops: log.slice(0, SUMMARY_OPS), count: log.length, at: new Date().toISOString() });
     return true;
+  }
+
+  private pushUndo(entry: HistoryEntry) {
+    this.undoStack.push(entry);
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.splice(0, this.undoStack.length - HISTORY_LIMIT);
   }
 
   private checkRevision(expected: number) {
@@ -628,12 +945,33 @@ export class CanvasStore {
   }
 
   private commit(source: ChangeSource, ops: ChangeOp[], actor?: string) {
+    const fork = this.pendingFork;
+    this.pendingFork = undefined;
+    if (fork) {
+      ops = [{ op: "restore_revision", revision: fork.base }, ...ops];
+      this.lastFork = fork.id;
+    }
+    const parent = fork ? fork.base : this._revision;
     this._revision++;
     this.touch();
     const event: ChangeEvent = { revision: this._revision, source, ...(actor ? { actor } : {}), ops };
     this.events.push(event);
     if (this.events.length > LIMITS.historyEvents) this.events.splice(0, this.events.length - LIMITS.historyEvents);
+    this.pushRevision(event, parent);
     this.emit(event);
+  }
+
+  private pushRevision(event: ChangeEvent, parent: number) {
+    this.revisions.push({
+      revision: event.revision,
+      parent: this.revisions.some((r) => r.revision === parent) ? parent : null,
+      at: this.updatedAt,
+      source: event.source,
+      ...(event.actor ? { actor: event.actor } : {}),
+      ops: event.ops.slice(0, SUMMARY_OPS),
+      count: event.ops.length,
+    });
+    this.syncHead();
   }
 
   private emit(event: ChangeEvent) {
@@ -648,6 +986,75 @@ export class CanvasStore {
 }
 
 // --- history helpers -------------------------------------------------------------
+
+function mermaidOf(m: Model): string {
+  if (m.type === "sequence") return sequenceToMermaid(m.sequence);
+  return toMermaid({ direction: m.direction, nodes: [...m.nodes.values()], edges: [...m.edges.values()] });
+}
+
+const historyItem = ({ label, ops, count, at }: HistoryEntry): HistoryItem => ({ ...(label ? { label } : {}), ops, count, at });
+
+function storeModel(m: Model): StoredModel {
+  return {
+    type: m.type,
+    ...(m.type === "sequence" ? { sequence: m.sequence, seqCounters: m.seqCounters } : {}),
+    direction: m.direction,
+    nodes: [...m.nodes.values()],
+    edges: [...m.edges.values()],
+    annotations: [...m.annotations.values()],
+    nextAnnotationId: m.nextAnnotationId,
+    nodeCounter: m.nodeCounter,
+    edgeCounter: m.edgeCounter,
+    usedIds: [...m.usedIds],
+  };
+}
+
+function loadModel(m: StoredModel): Model {
+  const model: Model = {
+    type: m.type === "sequence" ? "sequence" : "flowchart",
+    sequence: m.sequence ?? emptySequence(),
+    seqCounters: m.seqCounters ?? {},
+    direction: m.direction === "LR" ? "LR" : "TD",
+    nodes: new Map(m.nodes.map((n) => [n.id, n])),
+    edges: new Map(m.edges.map((e) => [e.id, e])),
+    annotations: new Map(m.annotations.map((a) => [a.id, a])),
+    nextAnnotationId: m.nextAnnotationId,
+    nodeCounter: m.nodeCounter,
+    edgeCounter: m.edgeCounter,
+    usedIds: new Set(m.usedIds),
+  };
+  const broken = integrityProblems(model);
+  if (broken.length) throw new Error(broken[0]);
+  return model;
+}
+
+/** An earlier revision's content, with the current id counters so ids and mark numbers are never reused. */
+function forkModel(current: Model, base: Model): Model {
+  const m = cloneModel(base);
+  m.nextAnnotationId = Math.max(current.nextAnnotationId, base.nextAnnotationId);
+  m.nodeCounter = Math.max(current.nodeCounter, base.nodeCounter);
+  m.edgeCounter = Math.max(current.edgeCounter, base.edgeCounter);
+  for (const [k, v] of Object.entries(current.seqCounters)) m.seqCounters[k] = Math.max(v, m.seqCounters[k] ?? 0);
+  for (const id of current.usedIds) m.usedIds.add(id);
+  return m;
+}
+
+const pairs = <K, V>(map: Map<K, [V | undefined, V | undefined]>): Array<[K, V | null, V | null]> =>
+  [...map].map(([k, [b, a]]) => [k, b ?? null, a ?? null]);
+const unpairs = <K, V>(list: Array<[K, V | null, V | null]> = []): Map<K, [V | undefined, V | undefined]> =>
+  new Map(list.map(([k, b, a]) => [k, [b ?? undefined, a ?? undefined]]));
+
+function storeEntry({ delta, ...rest }: HistoryEntry): StoredEntry {
+  if (!delta) return rest;
+  const { nodes, edges, annotations, ...whole } = delta;
+  return { ...rest, delta: { ...whole, nodes: pairs(nodes), edges: pairs(edges), annotations: pairs(annotations) } };
+}
+
+function loadEntry({ delta, ...rest }: StoredEntry): HistoryEntry {
+  if (!delta) return rest;
+  const { nodes, edges, annotations, ...whole } = delta;
+  return { ...rest, delta: { ...whole, nodes: unpairs(nodes), edges: unpairs(edges), annotations: unpairs(annotations) } };
+}
 
 /** Structural equality that ignores key order (objects here are flat apart from id arrays). */
 function same(a: unknown, b: unknown): boolean {
