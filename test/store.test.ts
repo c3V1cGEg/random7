@@ -164,7 +164,7 @@ function demo() {
 
 test("undo/redo restores the user's own edit and keeps the agent's out of history", () => {
   const s = demo();
-  assert.equal(s.browserState().history.undo, 0, "agent drawing is not undoable by the user");
+  assert.equal(s.browserState().history.undo.length, 0, "agent drawing is not undoable by the user");
   s.applyPatch(1, [{ op: "update_node", id: "n2", label: "Renamed" }], "user");
   const undone = s.undo();
   assert.deepEqual(undone.ops, [{ op: "update_node", id: "n2", label: "Process selected batch atomically", shape: "action" }]);
@@ -180,7 +180,7 @@ test("grouped patches undo as one step", () => {
   const id = a.createdNodeIds![0];
   s.applyPatch(2, [{ op: "add_edge", from: "n6", to: id }], "user", "g1");
   s.applyPatch(3, [{ op: "update_node", id, label: "Emit metrics" }], "user", "g1");
-  assert.equal(s.browserState().history.undo, 1);
+  assert.equal(s.browserState().history.undo.length, 1);
   s.undo();
   assert.equal(s.browserState().nodes.length, 6);
   assert.equal(s.browserState().edges.length, 6);
@@ -209,7 +209,7 @@ test("undoing a mark deletion brings back the same number; new marks still get f
   assert.equal(s.snapshot().annotations[0].id, 1);
   const r = s.applyPatch(s.revision, [{ op: "add_annotation", nodeIds: ["n2"] }], "user");
   assert.deepEqual(r.createdAnnotationIds, [2]);
-  assert.equal(s.browserState().history.redo, 0, "a new user edit clears redo");
+  assert.equal(s.browserState().history.redo.length, 0, "a new user edit clears redo");
 });
 
 test("undo refuses to overwrite a later agent change and leaves the state untouched", () => {
@@ -219,7 +219,7 @@ test("undo refuses to overwrite a later agent change and leaves the state untouc
   const before = s.snapshot();
   assert.equal(code(() => s.undo()), "undo_conflict");
   assert.deepEqual(s.snapshot(), before);
-  assert.equal(s.browserState().history.undo, 0, "the conflicting step is dropped");
+  assert.equal(s.browserState().history.undo.length, 0, "the conflicting step is dropped");
 });
 
 test("undo refuses to orphan something the agent attached later", () => {

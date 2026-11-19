@@ -269,7 +269,7 @@ test("edge attachment points are layout: shared, cleared with null, never shown 
 test("sessions survive a restart, and connected agents keep working", async () => {
   const before = await call("canvas_get_snapshot", { session: "batch-review" });
   await stopServer(server);
-  assert.ok(readdirSync(DATA_DIR).includes("batch-review.json"));
+  assert.ok(readdirSync(DATA_DIR).includes("batch-review"));
   server = await startServer();
 
   // Same client, old MCP connection id: served statelessly instead of failing.
@@ -291,7 +291,7 @@ test("sessions survive a restart, and connected agents keep working", async () =
 test("browser can delete a session but not the default one", async () => {
   const del = await fetch(`${BASE}/api/s/batch-review`, { method: "DELETE", headers: { origin: BASE } });
   assert.equal(del.status, 200);
-  assert.ok(!readdirSync(DATA_DIR).includes("batch-review.json"));
+  assert.ok(!readdirSync(DATA_DIR).includes("batch-review"));
   const delDefault = await fetch(`${BASE}/api/s/default`, { method: "DELETE", headers: { origin: BASE } });
   assert.equal(delDefault.status, 400);
 });
@@ -323,7 +323,7 @@ test("a session exports to a file and imports back as a new session", async () =
   const copy = await call("canvas_get_snapshot", { session: "restored" });
   assert.match(copy.data.diagram, /Exported step/);
   assert.notEqual(copy.data.sessionId, (await call("canvas_get_snapshot")).data.sessionId, "an import gets its own session id");
-  await waitFor(() => readdirSync(DATA_DIR).includes("restored.json"));
+  await waitFor(() => readdirSync(DATA_DIR).includes("restored"));
 
   for (const bad of ["not json", "{}", JSON.stringify({ version: 1, name: "broken", model: {} })]) {
     const res = await importAs(bad, "broken");
