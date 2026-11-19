@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { describeOp, describeStep, fetchRevisions, type HistoryItem, type RevisionInfo } from "./api.ts";
+import { describeOp, describeStep, fetchRevisions, type HistoryItem, type OpTarget, type RevisionInfo } from "./api.ts";
+import type { Change, ElementChange, RevisionDiff, TextLine } from "./diff.ts";
+import { KIND_META } from "./kinds.ts";
 
 const time = (iso: string) => {
   const d = new Date(iso);
@@ -113,14 +115,21 @@ const PAGE = 200;
 export function RevisionsPanel({
   head,
   viewing,
+  compared,
   onOpen,
+  onCompare,
 }: {
   head: number;
   viewing: number | null;
+  /** The two revisions being compared (older first). */
+  compared: [number, number] | null;
   onOpen: (revision: number) => void;
+  onCompare: (a: number, b: number) => void;
 }) {
   const [list, setList] = useState<RevisionInfo[] | null>(null);
   const [limit, setLimit] = useState(PAGE);
+  /** Revisions picked with Ctrl+click to compare (at most two; a third replaces the first). */
+  const [picked, setPicked] = useState<number[]>([]);
   useEffect(() => {
     const t = setTimeout(() => {
       fetchRevisions()
@@ -138,7 +147,29 @@ export function RevisionsPanel({
     <section className="panel revisions">
       <p className="muted">
         Every change is a revision. Open one to look at it; edit it and your edit becomes the latest revision, made from that one.
+        Ctrl+click two revisions to compare them.
       </p>
+      {picked.length > 0 && (
+        <div className="compare-bar">
+          {picked.length === 1 ? (
+            <span>r{picked[0]} picked: Ctrl+click another one</span>
+          ) : (
+            <button
+              className="compare-go"
+              onClick={() => {
+                const [a, b] = [...picked].sort((x, y) => x - y);
+                setPicked([]);
+                onCompare(a, b);
+              }}
+            >
+              Compare r{Math.min(...picked)} → r{Math.max(...picked)}
+            </button>
+          )}
+          <button className="icon" onClick={() => setPicked([])} title="Clear the picked revisions">
+            ✕
+          </button>
+        </div>
+      )}
       <div className="rev-list" style={{ ["--graph" as string]: `${width}px` }}>
         <svg className="rev-graph" width={width} height={rows.length * ROW} aria-hidden>
           {straight.map((i) => (
@@ -165,15 +196,22 @@ export function RevisionsPanel({
         {rows.map((r) => (
           <button
             key={r.revision}
-            className={`rev-row${r.revision === current ? " current" : ""}`}
-            onClick={() => onOpen(r.revision)}
-            title={r.revision === head ? "The latest revision" : `Open revision ${r.revision}`}
+            className={`rev-row${r.revision === current ? " current" : ""}${picked.includes(r.revision) ? " picked" : ""}`}
+            onClick={(e) => {
+              if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return onOpen(r.revision);
+              setPicked((p) => (p.includes(r.revision) ? p.filter((x) => x !== r.revision) : [...p, r.revision].slice(-2)));
+            }}
+            title={`${r.revision === head ? "The latest revision" : `Open revision ${r.revision}`} · Ctrl+click to pick it for comparing`}
           >
             <span className="rev-top">
               <b>r{r.revision}</b>
               <span className={`who ${r.source}`}>{r.source === "agent" ? (r.actor ?? "Agent") : "You"}</span>
               {r.revision === head && <span className="rev-tag latest">latest</span>}
-              {r.revision === viewing && <span className="rev-tag viewing">viewing</span>}
+              {compared?.includes(r.revision) ? (
+                <span className="rev-tag viewing">{r.revision === compared[0] ? "compared from" : "compared to"}</span>
+              ) : (
+                r.revision === viewing && <span className="rev-tag viewing">viewing</span>
+              )}
               {r.parent !== null && r.parent !== r.revision - 1 && <span className="rev-tag from">from r{r.parent}</span>}
               <span className="rev-time">{time(r.at)}</span>
             </span>
@@ -186,6 +224,155 @@ export function RevisionsPanel({
           Show older ({list.length - limit} more)
         </button>
       )}
+    </section>
+  );
+}
+
+const CHANGE_LABEL: Record<Change, string> = { added: "Added", changed: "Changed", removed: "Removed" };
+const FIELD_LABEL: Record<string, string> = {
+  text: "text",
+  details: "detail lines",
+  shape: "shape",
+  status: "proposal colour",
+  ends: "connects",
+  arrow: "arrow",
+  kind: "kind",
+  sections: "sections",
+  position: "order",
+  targets: "targets",
+  replies: "replies",
+  orphaned: "targets deleted",
+};
+const TYPE_ICON: Record<ElementChange["type"], string> = {
+  node: "▭",
+  edge: "→",
+  participant: "☺",
+  message: "↦",
+  note: "✎",
+  activation: "▮",
+  fragment: "⧉",
+};
+
+/** Long runs of unchanged lines fold to "… N unchanged lines", keeping two lines of context. */
+function foldText(lines: TextLine[]): Array<TextLine | number> {
+  const out: Array<TextLine | number> = [];
+  const near = (i: number) => lines.slice(Math.max(0, i - 2), i + 3).some((l) => l.op !== " ");
+  let folded = 0;
+  lines.forEach((l, i) => {
+    if (l.op === " " && !near(i)) return void folded++;
+    if (folded) out.push(folded);
+    folded = 0;
+    out.push(l);
+  });
+  if (folded) out.push(folded);
+  return out;
+}
+
+/** What changed between two revisions: elements, marks, layout and the Mermaid text. Clicking a row shows it. */
+export function ComparePanel({
+  diff,
+  showMoves,
+  onShowMoves,
+  onReveal,
+  onClose,
+}: {
+  diff: RevisionDiff;
+  showMoves: boolean;
+  onShowMoves: (on: boolean) => void;
+  onReveal: (target: OpTarget) => void;
+  onClose: () => void;
+}) {
+  const groups = (["added", "changed", "removed"] as const).map((c) => [c, diff.elements.filter((e) => e.change === c)] as const);
+  const layoutCount = diff.moved.length + diff.reanchored.length;
+  const nothing = !diff.elements.length && !diff.marks.length;
+  const text = foldText(diff.text);
+  return (
+    <section className="panel compare">
+      <div className="panel-head">
+        <h3>
+          r{diff.from} → r{diff.to}
+        </h3>
+        <button className="ghost" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      {nothing && <p className="muted">{diff.text.some((l) => l.op !== " ") ? "Only the Mermaid text differs." : "No changes to the diagram or marks."}</p>}
+      {groups.map(([change, items]) =>
+        items.length ? (
+          <div key={change} className="compare-group">
+            <div className={`compare-title ${change}`}>
+              {CHANGE_LABEL[change]} <span className="count">{items.length}</span>
+            </div>
+            {items.map((c) => (
+              <button key={c.id} className={`compare-row ${change}`} onClick={() => onReveal({ element: c.id })} title={`Show ${c.id}`}>
+                <span className="compare-icon">{TYPE_ICON[c.type]}</span>
+                <span className="compare-name">
+                  {c.name}
+                  {c.fields.length > 0 && <span className="compare-fields"> · {c.fields.map((f) => FIELD_LABEL[f] ?? f).join(", ")}</span>}
+                  {c.before !== undefined && <span className="compare-before">was “{c.before || "(empty)"}”</span>}
+                </span>
+                <code>{c.id}</code>
+              </button>
+            ))}
+          </div>
+        ) : null,
+      )}
+      {diff.marks.length > 0 && (
+        <div className="compare-group">
+          <div className="compare-title">
+            Marks <span className="count">{diff.marks.length}</span>
+          </div>
+          {diff.marks.map((m) => (
+            <button key={m.id} className={`compare-row ${m.change}`} onClick={() => m.change !== "removed" && onReveal({ mark: m.id })}>
+              <span className="compare-icon">{KIND_META[m.kind ?? "none"].icon}</span>
+              <span className="compare-name">
+                #{m.id} {m.text ? `“${m.text.length > 50 ? m.text.slice(0, 49) + "…" : m.text}”` : KIND_META[m.kind ?? "none"].label}
+                <span className="compare-fields">
+                  {" · "}
+                  {m.change === "changed"
+                    ? m.fields.map((f) => (f === "replies" ? `${m.newReplies} new repl${m.newReplies === 1 ? "y" : "ies"}` : FIELD_LABEL[f] ?? f)).join(", ")
+                    : m.change}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {diff.type === "flowchart" && (
+        <label className="compare-moves" title="Moves and resizes don't change the diagram's meaning; they are left out unless shown here">
+          <input type="checkbox" checked={showMoves} onChange={(e) => onShowMoves(e.target.checked)} disabled={!layoutCount} />
+          Show layout changes
+          <span className="muted">
+            {layoutCount ? ` (${diff.moved.length} box${diff.moved.length === 1 ? "" : "es"} moved, ${diff.reanchored.length} edge end${diff.reanchored.length === 1 ? "" : "s"})` : " (none)"}
+          </span>
+        </label>
+      )}
+      {showMoves &&
+        [...diff.moved, ...diff.reanchored].map((id) => (
+          <button key={id} className="compare-row moved" onClick={() => onReveal({ element: id })}>
+            <span className="compare-icon">{diff.moved.includes(id) ? "✥" : "↝"}</span>
+            <span className="compare-name">{diff.moved.includes(id) ? "moved or resized" : "edge end moved"}</span>
+            <code>{id}</code>
+          </button>
+        ))}
+      <details className="compare-text">
+        <summary>Mermaid text</summary>
+        <pre>
+          {text.map((l, i) =>
+            typeof l === "number" ? (
+              <span key={i} className="fold">
+                … {l} unchanged line{l === 1 ? "" : "s"}
+                {"\n"}
+              </span>
+            ) : (
+              <span key={i} className={l.op === "+" ? "add" : l.op === "-" ? "del" : ""}>
+                {l.op} {l.line}
+                {"\n"}
+              </span>
+            ),
+          )}
+        </pre>
+      </details>
     </section>
   );
 }

@@ -55,6 +55,18 @@ Decisions made with the user:
 - Side panel tabs **Current / Revisions**. Revision rows show the number, who made it, what changed, the time, and tags for *latest*, *viewing* and *from rN*. The SVG graph draws the main line where a revision continues from the one below it, and an arc in a side lane to the parent otherwise.
 - Clicking a revision previews it with a banner. Agent changes keep arriving in the background. The first edit (including undo) is sent with the fork, and the tab returns to live editing once the new revision arrives.
 
-## 6. Tests
+## 6. Comparing two revisions
 
-`test/revisions.test.ts`: revision list and parents, forking and going back, failed fork, per-revision undo with a fork, multi-step undo and the limit, layout undo without a revision, folder persistence and legacy migration.
+- In the Revisions tab, Ctrl+click (or Shift/⌘+click) picks up to two revisions; **Compare rA → rB** compares the older to the newer. No server change: the browser fetches both revisions and compares them by id (`client/src/diff.ts`).
+- What is compared:
+  - Flowchart nodes: text, detail lines, shape and proposal colour. Edges: ends, label and proposal colour.
+  - Sequence elements: participants, messages, notes, activations and fragments (text, ends, arrow, kind, sections, colour). An element that moved in the order is found with a longest-common-subsequence over the ids.
+  - Marks: kind, text, targets, targets deleted, new replies.
+  - Layout, shown only when asked: boxes moved or resized, and edge ends moved.
+  - The Mermaid text, as a line diff.
+- The canvas shows the newer revision read-only: added elements as *new*, changed as *changed*, and removed flowchart elements put back where they were as *removed* (drawn underneath). The diagram's own proposal colours and the legend are hidden. The side panel's first tab becomes **Changes**, a list that shows each element on click, plus the folded Mermaid diff. Edits, undo and moves are refused with a note. The banner offers **Open rB** and **Back to latest**.
+- Sequence diagrams colour added and changed elements; removed ones appear only in the list.
+
+## 7. Tests
+
+`test/revisions.test.ts`: revision list and parents, forking and going back, failed fork, per-revision undo with a fork, multi-step undo and the limit, layout undo without a revision, folder persistence and legacy migration. `test/diff.test.ts`: flowchart and sequence comparison, the comparison drawing, the line diff.

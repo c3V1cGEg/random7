@@ -57,7 +57,8 @@ import { buildSequenceNodes, isDecoration } from "./sequenceNodes.ts";
 import { useSequence } from "./useSequence.ts";
 import { SelectionBar, nodeRect } from "./SelectionBar.tsx";
 import { ActivityPanel, MarksPanel, MermaidPanel, type ActivityItem } from "./Sidebar.tsx";
-import { RevisionsPanel, UndoButton } from "./Revisions.tsx";
+import { ComparePanel, RevisionsPanel, UndoButton } from "./Revisions.tsx";
+import { comparisonState, diffRevisions, type RevisionDiff } from "./diff.ts";
 import { diagramPng, download, drawnBounds } from "./snapshot.ts";
 import { buildVsdx, cubics } from "./vsdx.ts";
 
@@ -75,6 +76,16 @@ const isTypingTarget = (t: EventTarget | null) =>
 /** Applies a stored placement (position, and the size the user gave the node, if any) to a React Flow node. */
 const place = (n: CanvasNode, p: XY | undefined): CanvasNode =>
   p ? { ...n, position: { x: p.x, y: p.y }, width: p.w, height: undefined, data: { ...n.data, w: p.w, minHeight: p.h } } : n;
+
+const READ_ONLY = "Comparing revisions is read-only: open a revision or go back to the latest to edit.";
+
+/** "2 added, 1 changed, 1 removed" for the comparison banner. */
+function compareSummary(d: RevisionDiff): string {
+  const count = (c: string) => d.elements.filter((e) => e.change === c).length;
+  const parts = [`${count("added")} added`, `${count("changed")} changed`, `${count("removed")} removed`].filter((p) => !p.startsWith("0 "));
+  if (d.marks.length) parts.push(`${d.marks.length} mark${d.marks.length === 1 ? "" : "s"}`);
+  return parts.length ? parts.join(", ") : "no changes to the diagram";
+}
 
 const samePlace = (a: XY | undefined, b: XY | undefined) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
@@ -137,6 +148,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   /** The latest state from the server, kept while an earlier revision is shown. */
   const liveRef = useRef<BrowserState | null>(null);
   const [liveRevision, setLiveRevision] = useState(0);
+  /** Two revisions compared on the canvas (read-only; shown as the newer one, with change colours). */
+  const [compare, setCompare] = useState<{ diff: RevisionDiff; showMoves: boolean } | null>(null);
+  const comparingRef = useRef(false);
   const dragStart = useRef<Record<string, XY>>({});
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const revisionWaiters = useRef<Array<() => void>>([]);
@@ -243,7 +257,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
    */
   const shareLayout = useCallback((map: Record<string, XY>, record?: string) => {
     if (!Object.keys(map).length) return;
-    if (viewingRef.current !== null && !record) return;
+    if (viewingRef.current !== null && (!record || comparingRef.current)) return;
     Object.assign(unsentLayout.current, map);
     postLayout(map, {}, record)
       .catch(() => undefined)
@@ -441,7 +455,16 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           width: p?.w,
           height: undefined,
           ...(select ? { selected: select.has(n.id) } : {}),
-          data: { label: n.label, shape: n.shape, marks: nodeMarks.get(n.id) ?? [], direction: state.direction, status: n.status, w: p?.w, minHeight: p?.h },
+          data: {
+            label: n.label,
+            shape: n.shape,
+            marks: nodeMarks.get(n.id) ?? [],
+            direction: state.direction,
+            status: n.status,
+            w: p?.w,
+            minHeight: p?.h,
+            moved: !!compare?.showMoves && compare.diff.moved.includes(n.id),
+          },
         };
       });
     });
@@ -465,7 +488,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status, direction: state.direction, ...ends[e.id] },
       }));
     });
-  }, [state, edgeVersion]);
+  }, [state, edgeVersion, compare]);
 
   useEffect(() => {
     const capture = (e: KeyboardEvent) => {
@@ -503,6 +526,10 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
    */
   const send = useCallback(
     (operations: Operation[], group?: string): Promise<PatchResponse | undefined> => {
+      if (comparingRef.current) {
+        showToast(READ_ONLY);
+        return Promise.resolve(undefined);
+      }
       // A follow-up edit to a just-created node/mark joins its creation step (one undo removes both).
       if (!group && operations.length === 1 && "id" in operations[0]) {
         const op = operations[0];
@@ -544,6 +571,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
 
   /** Sets (or clears) where one edge end attaches; shared, saved and undoable like positions. */
   const setAnchor = useCallback((edge: string, end: "from" | "to", anchor: Anchor | null) => {
+    if (comparingRef.current) return;
     const ends: EdgeEnds = { ...anchors.current[edge] };
     if (anchor) ends[end] = anchor;
     else delete ends[end];
@@ -576,6 +604,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     (direction: "undo" | "redo", steps = 1) => {
       const run = async () => {
         const s = stateRef.current;
+        if (comparingRef.current) return showToast(READ_ONLY);
         if (!s?.history[direction].length) return;
         setEditingId(null);
         try {
@@ -599,6 +628,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       if (!live || revision === live.revision) return leavePreview(true);
       try {
         const preview = await fetchRevision(revision);
+        endCompare();
         forkId.current = crypto.randomUUID();
         setFork({ base: revision, id: forkId.current });
         viewingRef.current = revision;
@@ -611,9 +641,39 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     [receiveState, showToast],
   );
 
+  /**
+   * Compares two revisions (older first): the canvas shows the newer one, read-only, with what
+   * was added, changed and removed since the older one; the side panel lists the changes.
+   */
+  const openCompare = useCallback(
+    async (from: number, to: number) => {
+      try {
+        const [a, b] = await Promise.all([fetchRevision(from), fetchRevision(to)]);
+        const diff = diffRevisions(a, b);
+        forkId.current = null;
+        setFork(null);
+        comparingRef.current = true;
+        viewingRef.current = to;
+        setViewing(to);
+        setCompare({ diff, showMoves: false });
+        setPanelTab("current");
+        receiveState(comparisonState(a, b, diff), undefined, true);
+      } catch (err) {
+        showToast((err as Error).message);
+      }
+    },
+    [receiveState, showToast],
+  );
+
+  function endCompare() {
+    comparingRef.current = false;
+    setCompare(null);
+  }
+
   /** Back to the latest revision; `show` redraws it (not needed when it is about to arrive). */
   function leavePreview(show = false) {
     if (viewingRef.current === null) return;
+    endCompare();
     viewingRef.current = null;
     forkId.current = null;
     setFork(null);
@@ -1298,6 +1358,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               panOnDrag={[1, 2]}
               panOnScroll
               edgesReconnectable={false}
+              nodesDraggable={!compare}
+              nodesConnectable={!compare}
               zoomOnDoubleClick={false}
               minZoom={0.2}
               proOptions={{ hideAttribution: true }}
@@ -1305,7 +1367,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               <Background gap={24} size={1.2} />
               <Controls showInteractive={false} />
               <MiniMap pannable zoomable className="minimap" style={{ width: 150, height: 100 }} />
-              {state && (
+              {state && !compare && (
                 <ChangeLegend
                   nodes={isSeq ? [...state.sequence.participants, ...[...walkItems(state.sequence.items)].map((l) => l.item)] : state.nodes}
                   edges={isSeq ? [] : state.edges}
@@ -1387,7 +1449,16 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               )
             )}
             <ContextHint nodes={selectedNodes.length} edges={selectedEdges.length} editing={!!editingId} empty={!nodes.length} sequence={isSeq} />
-            {viewing !== null && (
+            {compare && (
+              <div className="preview-banner compare">
+                <span>
+                  Comparing <b>r{compare.diff.from}</b> → <b>r{compare.diff.to}</b>: {compareSummary(compare.diff)}. Read-only.
+                </span>
+                <button onClick={() => void openRevision(compare.diff.to)}>Open r{compare.diff.to}</button>
+                <button onClick={() => leavePreview(true)}>Back to latest</button>
+              </div>
+            )}
+            {viewing !== null && !compare && (
               <div className="preview-banner">
                 <span>
                   Viewing <b>revision {viewing}</b> (latest is {liveRevision}). An edit here continues from it as revision {liveRevision + 1}.
@@ -1406,14 +1477,31 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             <aside className="sidebar">
               <div className="panel-tabs" role="tablist">
                 <button role="tab" aria-selected={panelTab === "current"} className={panelTab === "current" ? "on" : ""} onClick={() => setPanelTab("current")}>
-                  {viewing === null ? "Current" : `Revision ${viewing}`}
+                  {compare ? "Changes" : viewing === null ? "Current" : `Revision ${viewing}`}
                 </button>
                 <button role="tab" aria-selected={panelTab === "revisions"} className={panelTab === "revisions" ? "on" : ""} onClick={() => setPanelTab("revisions")}>
                   Revisions <span className="count">{liveRevision}</span>
                 </button>
               </div>
-              {panelTab === "revisions" && <RevisionsPanel head={liveRevision} viewing={viewing} onOpen={(r) => void openRevision(r)} />}
-              {panelTab === "current" && state && (
+              {panelTab === "revisions" && (
+                <RevisionsPanel
+                  head={liveRevision}
+                  viewing={viewing}
+                  compared={compare ? [compare.diff.from, compare.diff.to] : null}
+                  onOpen={(r) => void openRevision(r)}
+                  onCompare={(a, b) => void openCompare(a, b)}
+                />
+              )}
+              {panelTab === "current" && compare && (
+                <ComparePanel
+                  diff={compare.diff}
+                  showMoves={compare.showMoves}
+                  onShowMoves={(showMoves) => setCompare({ ...compare, showMoves })}
+                  onReveal={reveal}
+                  onClose={() => leavePreview(true)}
+                />
+              )}
+              {panelTab === "current" && !compare && state && (
                 <MarksPanel
                   state={state}
                   activeMark={activeMark}
@@ -1427,8 +1515,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                   onCopy={copy}
                 />
               )}
-              {panelTab === "current" && <ActivityPanel items={activity} onReveal={reveal} />}
-              {panelTab === "current" && <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />}
+              {panelTab === "current" && !compare && <ActivityPanel items={activity} onReveal={reveal} />}
+              {panelTab === "current" && !compare && <MermaidPanel diagram={state?.diagram ?? ""} onCopy={copy} />}
             </aside>
           )}
         </div>
