@@ -14,6 +14,7 @@
   --k-incorrect: #d33c3c;
   --k-attention: #e07b12;
   --k-suggestion: #2e9a5b;
+  --k-decision: #c0398a;
   --k-uncertain: #7d8590;
   --k-custom: #1a9aa0;
   /* proposal statuses (Mermaid classDefs use the same colours) */
@@ -135,6 +136,7 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .kind-incorrect { --kc: var(--k-incorrect); }
 .kind-attention { --kc: var(--k-attention); }
 .kind-suggestion { --kc: var(--k-suggestion); }
+.kind-decision { --kc: var(--k-decision); }
 .kind-uncertain { --kc: var(--k-uncertain); }
 .kind-custom { --kc: var(--k-custom); }
 

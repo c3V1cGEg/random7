@@ -111,6 +111,7 @@ const KIND_COLOR: Record<keyof typeof KIND_META, string> = {
   incorrect: "#d33c3c",
   attention: "#e07b12",
   suggestion: "#2e9a5b",
+  decision: "#c0398a",
   uncertain: "#7d8590",
   custom: "#1a9aa0",
 };
