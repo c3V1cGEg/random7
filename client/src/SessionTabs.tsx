@@ -112,6 +112,66 @@ export function SessionTabs({
     strip.current?.querySelector(".session-tab.current")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sessions.length]);
 
+  // More tabs than fit: the strip scrolls sideways (mouse wheel, or ‹ › one tab at a time).
+  const [overflow, setOverflow] = useState({ left: false, right: false });
+  /** Where a ‹ › scroll is heading, so quick clicks each move one more tab. */
+  const target = useRef<number | null>(null);
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const update = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      setOverflow((o) => {
+        const next = { left: max > 1 && el.scrollLeft > 1, right: max > 1 && el.scrollLeft < max - 1 };
+        return o.left === next.left && o.right === next.right ? o : next;
+      });
+      if (target.current !== null && Math.abs(el.scrollLeft - target.current) < 2) target.current = null;
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!delta) return;
+      e.preventDefault();
+      target.current = null;
+      el.scrollLeft += e.deltaMode === 1 ? delta * 40 : e.deltaMode === 2 ? delta * el.clientWidth : delta;
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    for (const child of el.children) observer.observe(child);
+    el.addEventListener("scroll", update, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", update);
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [tabs.length]);
+
+  /** Scrolls by one tab: the next tab cut off on that side comes fully into view. */
+  const step = (direction: 1 | -1) => {
+    const el = strip.current;
+    if (!el) return;
+    const from = target.current ?? el.scrollLeft;
+    // Exact (fractional) tab edges within the strip; rounded offsets can leave a tab a pixel short.
+    const box = el.getBoundingClientRect();
+    const edges = [...el.querySelectorAll<HTMLElement>(".session-tab")].map((t) => {
+      const r = t.getBoundingClientRect();
+      return { left: r.left - box.left - el.clientLeft + el.scrollLeft, right: r.right - box.left - el.clientLeft + el.scrollLeft };
+    });
+    let to = from;
+    if (direction > 0) {
+      const next = edges.find((t) => t.right > from + el.clientWidth + 1);
+      if (next) to = Math.ceil(next.right - el.clientWidth);
+    } else {
+      const prev = edges.findLast((t) => t.left < from - 1);
+      if (prev) to = Math.floor(prev.left);
+    }
+    to = Math.max(0, Math.min(to, el.scrollWidth - el.clientWidth));
+    target.current = to;
+    el.scrollTo({ left: to, behavior: "smooth" });
+  };
+
   const create = async () => {
     const n = slug(name);
     if (!n) return;
@@ -216,6 +276,16 @@ export function SessionTabs({
           );
         })}
       </div>
+      {(overflow.left || overflow.right) && (
+        <div className="session-scroll">
+          <button onClick={() => step(-1)} disabled={!overflow.left} title="Scroll the tabs left by one" aria-label="Previous tabs">
+            ‹
+          </button>
+          <button onClick={() => step(1)} disabled={!overflow.right} title="Scroll the tabs right by one" aria-label="More tabs">
+            ›
+          </button>
+        </div>
+      )}
       <div className="session-new-wrap" ref={newRef}>
         <button className="session-add" onClick={() => setNewOpen((o) => !o)} title="Create a new canvas session (Alt+N; Ctrl/Cmd+N where the browser allows it)">
           + New session

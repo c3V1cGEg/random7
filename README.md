@@ -1,5 +1,7 @@
 # Visual Agent Canvas — POC
 
+What's new: see the [changelog](CHANGELOG.md).
+
 ![Claude Code in a terminal (left) drawing a document upload flow on the Visual Agent Canvas in the browser (right)](docs/claude-code-and-canvas-side-by-side.png)
 
 A shared, live flowchart canvas. You edit it in the browser; an MCP coding agent reads and edits the
