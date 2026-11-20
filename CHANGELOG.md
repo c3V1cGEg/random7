@@ -3,7 +3,7 @@
 Newest first. Changes you can see in the editor come with a screenshot; the images live in
 [`docs/changelog/`](docs/changelog/).
 
-## Unreleased
+## 2026-11-20
 
 ### Session tabs stay on one line and scroll sideways
 
