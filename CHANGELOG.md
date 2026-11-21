@@ -28,7 +28,7 @@ revision read-only:
 The side panel lists every change and changed mark. You can also turn on layout moves and open a
 Mermaid text diff.
 
-![Comparing r2 and r5: Backorder removed in red, Cancel order and Notify customer added in green, the change list in the side panel](docs/changelog/compare-revisions.png)
+![Comparing r2 and r5: Backorder removed in red, Cancel order and Notify customer added in green, the change list and the Mermaid text diff in the side panel](docs/changelog/compare-revisions.png)
 
 ### Revision history
 
