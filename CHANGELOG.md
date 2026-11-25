@@ -3,6 +3,15 @@
 Newest first. Changes you can see in the editor come with a screenshot; the images live in
 [`docs/changelog/`](docs/changelog/).
 
+## 2026-11-25
+
+### A new mark opens in the Current tab
+
+Adding a mark (M, or a chip on the selection bar) while the **Revisions** tab is open switches the side
+panel to **Current**, with the new mark highlighted and its note ready to type in.
+
+![Mark #4 just added on Ship: the side panel is back on Current with the new mark's note filled in](docs/changelog/mark-from-revisions-tab.png)
+
 ## 2026-11-20
 
 ### Session tabs stay on one line and scroll sideways

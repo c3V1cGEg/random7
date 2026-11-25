@@ -922,6 +922,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       if (id) {
         pendingGroups.current.set(`mark:${id}`, group);
         showSidebar(true);
+        setPanelTab("current");
         setActiveMark(id);
         setNoteFocus(id);
       }
