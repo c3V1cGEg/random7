@@ -1,6 +1,6 @@
 ---
 name: visual-canvas
-description: Collaborate with the user on a live, editable visual canvas (flowcharts and sequence-diagram timelines) through the Visual Agent Canvas MCP. Use when the user asks for a visualization, diagram or visual review of existing or proposed software behavior. Supports low, medium and high levels of behavioral detail, proposed-change colouring, and numbered user marks (#N).
+description: Collaborate with the user on a live, editable visual canvas (flowcharts, sequence-diagram timelines and state diagrams) through the Visual Agent Canvas MCP. Use when the user asks for a visualization, diagram or visual review of existing or proposed software behavior. Supports low, medium and high levels of behavioral detail, proposed-change colouring, and numbered user marks (#N).
 ---
 
 # Visual Canvas — Agent Skill
@@ -25,7 +25,7 @@ Patches are atomic: either every operation applies or none does. Every write nee
 
 ## Supported diagrams and limitations
 
-A session holds **one diagram type**: a `flowchart` (process, decisions, outcomes) or a `sequence` diagram (who talks to whom over time: workers, queues, transactions, locks, retries, concurrency). `canvas_get_snapshot` returns `type`. Sending a `sequenceDiagram` to `canvas_replace_diagram` turns the session into a sequence diagram; a `flowchart` header turns it back.
+A session holds **one diagram type**: a `flowchart` (process, decisions, outcomes) a `sequence` diagram (who talks to whom over time: workers, queues, transactions, locks, retries, concurrency) or a `state` diagram (the lifecycle of one business object: its states, the events that move it between them, and optionally where real instances currently are). `canvas_get_snapshot` returns `type`. The header sent to `canvas_replace_diagram` (`flowchart`, `sequenceDiagram`, `stateDiagram-v2`) sets the session's type.
 
 ### Flowchart subset
 
@@ -34,6 +34,10 @@ A session holds **one diagram type**: a `flowchart` (process, decisions, outcome
 ### Sequence-diagram subset
 
 {{SEQUENCE_SYNTAX}}
+
+### State-diagram subset
+
+{{STATE_SYNTAX}}
 
 ### Limits
 
@@ -183,6 +187,43 @@ sequenceDiagram
     end
 ```
 
+### State-diagram conventions
+
+A state diagram is an **overview for a person**: how the status of one thing behaves, at business level. It explains the code without mirroring it. Aim for something the user grasps in half a minute, not a complete map of every code path.
+
+- **One diagram per thing** (order, invoice, ticket, mark). Its states are the values the status can have. In code that is usually an enum: one state per enum value, with the constant as the id (`state "Payment failed" as PAYMENT_FAILED`). Do not invent states the code does not distinguish.
+- **Name things in business words.** States are what the thing *is* ("Submitted", "Payment failed"), never steps ("Submit order"). Transitions are the business event, in words, not function or API names: `customer pays`, `payment declined`, `24h pass / release stock`, not `PaymentService.capture()`.
+- **Keep it small.** Roughly 3–10 states. Merge transitions that mean the same to the user. A guard only when it changes where things go (`[approved]` / `[declined]` after a `choice`).
+- **Things possible from every state** (cancel, delete, archive) are drawn **once** from `any`, not from each state. Never leave them out to save arrows: an overview that omits them is wrong.
+- **Side flags are not states.** A flag that can combine with any state (orphaned, locked, flagged for review) would multiply the states. Mention it as a detail line or an instance field, or draw it as its own small diagram if it matters.
+- Detail lines under a state say what holds while in it (`Submitted : stock reserved`), briefly.
+- The States legend flags *unreachable* states and *dead ends* (no way out, not the end). When one shows up, check whether the code really behaves like that; if it does, point it out to the user, it is often a bug.
+- When the user asks where a concrete object is, or to walk through a scenario, add it as an instance (`set_instance`) with a few relevant fields, and move it with `via` one transition per patch, so each step is visible. For "how many are where" give counts in fields or ask before adding many instances.
+
+Example (`low`): the lifecycle of a review comment, with deletion possible at any time:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Open" as OPEN
+    OPEN : waiting for the author
+    state "Answered" as ANSWERED
+    state "Resolved" as RESOLVED
+    state "Any state" as any
+    %%@e1
+    [*] --> OPEN : reviewer comments
+    %%@e2
+    OPEN --> ANSWERED : author replies
+    %%@e3
+    ANSWERED --> OPEN : reviewer follows up
+    %%@e4
+    ANSWERED --> RESOLVED : reviewer resolves
+    %%@e5
+    RESOLVED --> [*]
+    %%@e6
+    any --> [*] : comment deleted
+```
+
 ## Current vs proposed vs uncertain
 
 Make the epistemic status visible on the canvas instead of in long chat text:
@@ -195,7 +236,7 @@ Make the epistemic status visible on the canvas instead of in long chat text:
 
 The canvas carries the logical diagram plus **marks** (annotations). The browser owns all geometry; marks reach you as meaning and references only.
 
-- A mark is `{"id": N, "nodeIds": [...], "edgeIds": [...], "elementIds": [...], "kind"?, "text"?, "by", "replies"?, "awaitingReply"?, "orphaned"?}`. Flowcharts use `nodeIds`/`edgeIds`; sequence diagrams use `elementIds` (participant, message, note, activation or block ids). Mark kinds: {{MARK_KINDS}}.
+- A mark is `{"id": N, "nodeIds": [...], "edgeIds": [...], "elementIds": [...], "kind"?, "text"?, "by", "replies"?, "awaitingReply"?, "orphaned"?}`. Flowcharts and state diagrams use `nodeIds`/`edgeIds`; sequence diagrams use `elementIds` (participant, message, note, activation or block ids). Mark kinds: {{MARK_KINDS}}.
 - A `decision` mark records a choice the user has made: treat it as settled and follow it in this and later changes (do not reopen it); reply with what you changed to match it.
 - "#6" or "mark 6" means annotation id 6 in the snapshot. Read its targets and text before acting on it.
 - Numbers start at 1 per session, only increase and are never reused. Never invent or renumber marks.

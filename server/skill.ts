@@ -101,6 +101,7 @@ export function buildSkill(tools: ToolSpec[], caps: ReturnType<typeof Capabiliti
     throw new CanvasError("skill_unavailable", `the skill template could not be read (${(err as Error).message}); reinstall or restart the canvas server`);
   }
   const { example, ...sequence } = caps.sequenceDiagram;
+  const { example: stateExample, ...state } = caps.stateDiagram;
   const { sequence: sequenceOps, ...flowchartOps } = caps.operations;
   const values: Record<string, string> = {
     SERVER_VERSION,
@@ -108,6 +109,7 @@ export function buildSkill(tools: ToolSpec[], caps: ReturnType<typeof Capabiliti
     OPERATIONS: `Flowchart and general operations:\n\n${renderValue(flowchartOps)}\n\nSequence-diagram operations:\n\n${renderValue(sequenceOps)}`,
     FLOWCHART_SYNTAX: renderValue((({ types: _types, ...rest }) => rest)(caps.diagram)),
     SEQUENCE_SYNTAX: `${renderValue(sequence)}\n\nExample:\n\n${codeBlock(example)}`,
+    STATE_SYNTAX: `${renderValue(state)}\n\nExample:\n\n${codeBlock(stateExample)}`,
     LIMITS: renderValue(caps.limits),
     MARK_KINDS: ANNOTATION_KINDS.map((k) => `\`${k}\``).join(", "),
   };
@@ -121,7 +123,7 @@ export function buildSkill(tools: ToolSpec[], caps: ReturnType<typeof Capabiliti
       skill_version: `${SERVER_VERSION}+${createHash("sha256").update(markdown).digest("hex").slice(0, 10)}`,
       server_version: SERVER_VERSION,
       supported_levels: DETAIL_LEVELS,
-      diagram_types: ["flowchart", "sequence"],
+      diagram_types: ["flowchart", "sequence", "state"],
       tools: tools.map((t) => t.name),
       generated_at: new Date().toISOString(),
       install_paths: { project: ".claude/skills/visual-canvas/SKILL.md", user: "~/.claude/skills/visual-canvas/SKILL.md" },

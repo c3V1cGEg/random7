@@ -4,6 +4,7 @@ import {
   Controls,
   MarkerType,
   MiniMap,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
@@ -18,7 +19,7 @@ import {
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import { awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type EdgeEnds, type NodeShape } from "../../server/types.ts";
+import { DIAGRAM_TYPES, awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type DiagramType, type EdgeEnds, type NodeShape } from "../../server/types.ts";
 import { resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
@@ -47,7 +48,7 @@ import {
 import { ActionsContext, edgeTypes, nodeTypes, type CanvasActions, type CanvasEdge, type CanvasNode, type TypeAhead } from "./elements.tsx";
 import { KIND_META } from "./kinds.ts";
 import { DEFAULT_SIZE, dagreLayout, placeMissing, type Size, type XY } from "./layout.ts";
-import { ChangeLegend } from "./Legend.tsx";
+import { ChangeLegend, StateLegend, stateOrder, stateValue } from "./Legend.tsx";
 import { OverflowTip } from "./OverflowTip.tsx";
 import { walkItems } from "../../server/sequence.ts";
 import { SequenceBar } from "./SequenceBar.tsx";
@@ -66,7 +67,17 @@ const TOUCH_HIGHLIGHT_MS = 4000;
 /** Arrowhead colours for edge statuses (SVG markers can't use the CSS variables). */
 const STATUS_COLOR: Record<ChangeStatus, string> = { new: "#16a34a", changed: "#d97706", removed: "#dc2626" };
 const FIT = { padding: 0.25, duration: 300, maxZoom: 1.2 } as const;
-const DEFAULT_LABEL: Record<NodeShape, string> = { action: "New step", decision: "Condition?", terminal: "Start", store: "Database" };
+const DEFAULT_LABEL: Record<NodeShape, string> = {
+  action: "New step",
+  decision: "Condition?",
+  terminal: "Start",
+  store: "Database",
+  state: "New state",
+  initial: "Start",
+  final: "End",
+  choice: "choice",
+  any: "Any state",
+};
 
 const allNodeTypes = { ...nodeTypes, ...sequenceNodeTypes };
 
@@ -238,7 +249,12 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   // --- layout ------------------------------------------------------------------
 
   const fit = useCallback((ids?: string[]) => {
-    rf.fitView(ids?.length ? { ...FIT, nodes: ids.map((id) => ({ id })) } : FIT);
+    // Legends float over the top-left of the canvas: keep the framed diagram to the right of them.
+    const pane = document.querySelector(".react-flow")?.getBoundingClientRect();
+    const legend = document.querySelector(".legend-stack")?.getBoundingClientRect();
+    const covered = pane && legend && legend.width > 0 ? legend.right - pane.left : 0;
+    const options = covered ? { ...FIT, padding: { top: "12%" as const, bottom: "12%" as const, right: "6%" as const, left: `${Math.round(covered + 32)}px` as const } } : FIT;
+    rf.fitView(ids?.length ? { ...options, nodes: ids.map((id) => ({ id })) } : options);
   }, [rf]);
 
   /** Whether all of these boxes (flow coordinates) lie inside the visible canvas. */
@@ -349,6 +365,13 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       if (!empty && (!prev || switched || prev.sessionId !== next.sessionId || (next.type === "sequence" && prev.type !== next.type))) setTimeout(() => fit(), 80);
       revisionWaiters.current.splice(0).forEach((fn) => fn());
 
+      // The state being edited got a new value (id) from elsewhere: keep editing it, with what was typed so far.
+      const renamed = event?.ops.find((op) => op.op === "update_node" && typeof op.newId === "string" && op.id === editingRef.current);
+      if (renamed) {
+        const typed = document.querySelector<HTMLTextAreaElement>("textarea.label-edit")?.value;
+        if (typed !== undefined) typeAhead.current = { text: typed, then: null };
+        setEditingId(renamed.newId as string);
+      }
       if (event) {
         const items = event.ops.map((op, i) => ({
           key: `${event.revision}-${i}`,
@@ -359,9 +382,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         }));
         setActivity((a) => [...items.reverse(), ...a].slice(0, 60));
         if (event.source === "agent") {
-          flashTouched(
-            items.flatMap((i) => (i.target && "element" in i.target ? [i.target.element] : i.target ? [`#${i.target.mark}`] : [])),
-          );
+          flashTouched([
+            ...items.flatMap((i) => (i.target && "element" in i.target ? [i.target.element] : i.target ? [`#${i.target.mark}`] : [])),
+            // An instance that moved: its chip, and the transition it took.
+            ...event.ops.flatMap((op) => (op.op === "set_instance" ? [`inst:${op.id}`, ...(typeof op.via === "string" ? [op.via] : Array.isArray(op.via) ? (op.via as string[]) : [])] : [])),
+          ]);
         }
       }
       // Laid out once real node sizes have been measured; autoLayout also fits the view.
@@ -464,6 +489,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             w: p?.w,
             minHeight: p?.h,
             moved: !!compare?.showMoves && compare.diff.moved.includes(n.id),
+            ...(state.type === "state"
+              ? { instances: state.instances.filter((i) => i.state === n.id && !i.orphaned).map(({ id, label, fields }) => ({ id, label, fields })) }
+              : {}),
           },
         };
       });
@@ -485,7 +513,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         type: "canvas",
         ...(select ? { selected: select.has(e.id) } : {}),
         markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, ...(e.status ? { color: STATUS_COLOR[e.status] } : {}) },
-        data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status, direction: state.direction, ...ends[e.id] },
+        data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status, direction: state.direction, fromAny: e.from === "any", ...ends[e.id] },
       }));
     });
   }, [state, edgeVersion, compare]);
@@ -692,6 +720,33 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     useMemo(() => ({ stateRef, layoutRef: seqLayout, send, selectOnly, setEditingId, pendingGroups, typeAhead }), [selectOnly, send]),
   );
   const isSeq = state?.type === "sequence";
+  const isState = state?.type === "state";
+
+  /** Legend rows: select the elements and bring them (an edge: both its ends) into view. */
+  const revealInGraph = useCallback(
+    (ids: string[]) => {
+      selectOnly(ids);
+      const s = stateRef.current;
+      fit(ids.flatMap((id) => {
+        const edge = s?.edges.find((e) => e.id === id);
+        return edge ? [edge.from, edge.to] : [id];
+      }));
+    },
+    [fit, selectOnly],
+  );
+
+  /**
+   * The shape N, D and T (and Tab, double-click) create: flowchart step / decision / start-end, or in
+   * state diagrams state / choice / the initial state, then the final one.
+   */
+  const shapeFor = useCallback((key: "step" | "branch" | "end"): NodeShape | null => {
+    const s = stateRef.current;
+    if (s?.type !== "state") return key === "step" ? "action" : key === "branch" ? "decision" : "terminal";
+    if (key === "step") return "state";
+    if (key === "branch") return "choice";
+    const has = (shape: NodeShape) => s.nodes.some((n) => n.shape === shape);
+    return !has("initial") ? "initial" : !has("final") ? "final" : null;
+  }, []);
 
   /** Decision branches get Yes, then No, automatically; easy to change afterwards. */
   const autoEdgeLabel = useCallback((fromId: string): { label?: string } => {
@@ -706,7 +761,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   /** Creates a node centred on `center`, optionally connected, then selects it and opens its label editor. */
   const createNode = useCallback(
     async (shape: NodeShape, center: XY, link?: { id: string; as: "source" | "target" }) => {
-      typeAhead.current = { text: "", then: null };
+      // Start/end dots and choices have no label to type: keys typed meanwhile must not be held for an editor.
+      const labelled = shape !== "initial" && shape !== "final" && shape !== "choice";
+      typeAhead.current = labelled ? { text: "", then: null } : null;
       const group = crypto.randomUUID();
       const res = await send([{ op: "add_node", label: DEFAULT_LABEL[shape], shape }], group);
       const id = res?.createdNodeIds?.[0];
@@ -722,7 +779,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         await send([{ op: "add_edge", from, to, ...autoEdgeLabel(from) }], group);
       }
       selectOnly([id]);
-      setEditingId(id);
+      if (labelled) setEditingId(id);
     },
     [autoEdgeLabel, selectOnly, send, setPosition],
   );
@@ -733,9 +790,25 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     return rf.screenToFlowPosition(p);
   }, [rf]);
 
+  /** Nodes whose label cannot be edited: start/end dots, choices (named by their id) and "any state". */
+  const fixedLabel = useCallback((id: string) => {
+    const shape = stateRef.current?.nodes.find((n) => n.id === id)?.shape;
+    return shape === "initial" || shape === "final" || shape === "choice" || shape === "any";
+  }, []);
+
+  /** State diagrams: the one "any state" marker; transitions from it are possible from every state. */
+  const addAnyState = useCallback(() => {
+    if (stateRef.current?.nodes.some((n) => n.shape === "any")) {
+      selectOnly(["any"]);
+      return showToast("“Any state” is already there: draw more transitions from it");
+    }
+    void createNode("any", pointerOrCenter());
+  }, [createNode, pointerOrCenter, selectOnly, showToast]);
+
   const addNext = useCallback(
-    (fromId: string) => {
+    (fromId: string, linkId = fromId) => {
       const s = stateRef.current;
+      if (s?.nodes.find((n) => n.id === fromId)?.shape === "final") return showToast("Nothing leads out of the end");
       const from = rf.getNode(fromId);
       if (!s || !from) return;
       const r = nodeRect(from);
@@ -749,9 +822,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         center = lr ? { ...center, y: center.y + size.height + 40 } : { ...center, x: center.x + size.width + 40 };
       }
       setEditingId(null);
-      void createNode("action", center, { id: fromId, as: "source" });
+      void createNode(shapeFor("step")!, center, { id: linkId, as: "source" });
     },
-    [createNode, rf],
+    [createNode, rf, shapeFor, showToast],
   );
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
@@ -877,10 +950,10 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         const [from, to] = asSource ? [fromId, hit] : [hit, fromId];
         void send([{ op: "add_edge", from, to, ...autoEdgeLabel(from) }]);
       } else if (!hit) {
-        void createNode("action", rf.screenToFlowPosition({ x: clientX, y: clientY }), { id: fromId, as: asSource ? "source" : "target" });
+        void createNode(shapeFor("step")!, rf.screenToFlowPosition({ x: clientX, y: clientY }), { id: fromId, as: asSource ? "source" : "target" });
       }
     },
-    [autoEdgeLabel, createNode, rf, send, seq],
+    [autoEdgeLabel, createNode, rf, send, seq, shapeFor],
   );
 
   const onPaneDoubleClick = useCallback(
@@ -1050,11 +1123,41 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       // Marks on edges only have no outline on the canvas, just a chip on the edge: the note goes by its middle.
       const edge = edges.find((e) => mark.edgeIds.includes(e.id));
       if (!edge) return [];
-      const mid = { x: (edge.start.x + edge.end.x) / 2, y: (edge.start.y + edge.end.y) / 2 };
+      // Halfway along the drawn edge (where its chip is), not between its ends: a looping edge's ends can be far from its line.
+      const mid = lines === "curved" ? edge.mid : { x: (edge.start.x + edge.end.x) / 2, y: (edge.start.y + edge.end.y) / 2 };
       return [{ mark, box: { x: mid.x + 20, y: mid.y, width: 0, height: 0 }, outline: false }];
     });
+    // State diagrams: the instance chips as drawn, and the States legend in lifecycle order.
+    const state =
+      s.type === "state"
+        ? (() => {
+            const instances = s.instances.flatMap((i) => {
+              const chip = i.orphaned ? null : document.querySelector(`.instance[data-instance="${CSS.escape(i.id)}"]`);
+              return chip ? [{ id: i.id, label: i.label, state: i.state, fields: i.fields, ...flowBox(chip) }] : [];
+            });
+            const { ordered, unreachable, deadEnds, stuckChoices, starts, ends } = stateOrder(s.nodes, s.edges);
+            const title = (id: string) => (id === "final" ? "End" : (s.nodes.find((n) => n.id === id)?.label.split("\n")[0] ?? id));
+            const fromAny = s.edges.filter((e) => e.from === "any");
+            const legendNotes = [
+              ...(fromAny.length ? ["From any state:", ...fromAny.map((e) => `${e.label ? `${e.label} → ` : "→ "}${title(e.to)}`)] : []),
+              ...stuckChoices.map((id) => `⚠ Choice ${id} has no way out`),
+            ];
+            const legend = ordered.map((n) => ({
+              id: n.id,
+              label: n.label,
+              count: instances.filter((i) => i.state === n.id).length,
+              tags: [
+                ...(starts.has(n.id) ? ["start"] : []),
+                ...(ends.has(n.id) ? ["end"] : []),
+                ...(unreachable.has(n.id) ? ["unreachable"] : []),
+                ...(deadEnds.has(n.id) ? ["dead end"] : []),
+              ],
+            }));
+            return { instances, legend, legendNotes };
+          })()
+        : {};
     try {
-      const file = new Blob([buildVsdx({ title: s.title || SESSION, nodes, edges, marks, lines })], { type: "application/vnd.ms-visio.drawing" });
+      const file = new Blob([buildVsdx({ title: s.title || SESSION, nodes, edges, marks, lines, ...state })], { type: "application/vnd.ms-visio.drawing" });
       const url = URL.createObjectURL(file);
       download(url, `${SESSION}.vsdx`);
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
@@ -1110,18 +1213,26 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         switch (e.key) {
           case "n":
           case "N":
-            return void createNode("action", pointerOrCenter()), true;
+            return void createNode(shapeFor("step")!, pointerOrCenter()), true;
           case "d":
           case "D":
-            return void createNode("decision", pointerOrCenter()), true;
+            return void createNode(shapeFor("branch")!, pointerOrCenter()), true;
+          case "a":
+          case "A":
+            if (stateRef.current?.type !== "state") return false;
+            return addAnyState(), true;
           case "t":
-          case "T":
-            return void createNode("terminal", pointerOrCenter()), true;
+          case "T": {
+            const shape = shapeFor("end");
+            if (!shape) return showToast("This state diagram already has its start and end"), true;
+            return void createNode(shape, pointerOrCenter()), true;
+          }
           case "Tab":
             return selectedNodes.length === 1 && !selectedEdges.length ? (addNext(selectedNodes[0].id), true) : false;
           case "Enter":
           case "F2":
-            return single ? (setEditingId(single), true) : false;
+            // Start/end dots, choices and "any state" have no label to edit (and would leave the editor waiting).
+            return single && !fixedLabel(single) ? (setEditingId(single), true) : false;
           case "m":
           case "M":
             return selectedNodes.length || selectedEdges.length ? (void createMark(), true) : false;
@@ -1186,7 +1297,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, showSidebar, sidebarOpen, travel]);
+  }, [addAnyState, addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, showSidebar, sidebarOpen, travel]);
 
   // --- render ------------------------------------------------------------------
 
@@ -1194,7 +1305,15 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     () => ({
       editingId,
       setEditingId,
-      renameNode: (id, label) => void send([{ op: "update_node", id, label }]),
+      renameNode: (id, label) => {
+        // A hand-drawn state still has its generated id (n7): its value follows the name it gets, like an enum constant.
+        const s = stateRef.current;
+        const value = s?.type === "state" && /^n\d+$/.test(id) ? stateValue(label) : null;
+        const free = value && value !== id && !s!.nodes.some((n) => n.id === value) && !s!.edges.some((e) => e.id === value);
+        void send([{ op: "update_node", id, label, ...(free ? { newId: value } : {}) }]);
+        if (free) pendingSelect.current = new Set([value]);
+        return free ? value : id;
+      },
       relabelEdge: (id, label) => void send([{ op: "update_edge", id, label: label || null }]),
       addNext,
       focusMark: focusMarkById,
@@ -1267,15 +1386,30 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             </div>
           ) : (
             <div className="toolgroup">
-              <button onClick={() => createNode("action", pointerOrCenter())} title="Add step (N) — or double-click the canvas">
-                ▭ Step <kbd>N</kbd>
+              <button onClick={() => createNode(shapeFor("step")!, pointerOrCenter())} title={`Add ${isState ? "state" : "step"} (N) — or double-click the canvas`}>
+                {isState ? "▢ State" : "▭ Step"} <kbd>N</kbd>
               </button>
-              <button onClick={() => createNode("decision", pointerOrCenter())} title="Add decision (D)">
-                ◇ Decision <kbd>D</kbd>
+              <button onClick={() => createNode(shapeFor("branch")!, pointerOrCenter())} title={`Add ${isState ? "choice" : "decision"} (D)`}>
+                {isState ? "◇ Choice" : "◇ Decision"} <kbd>D</kbd>
               </button>
-              <button onClick={() => createNode("terminal", pointerOrCenter())} title="Add start / end (T)">
-                ⬭ Start/End <kbd>T</kbd>
+              <button
+                onClick={() => {
+                  const shape = shapeFor("end");
+                  if (shape) void createNode(shape, pointerOrCenter());
+                  else showToast("This state diagram already has its start and end");
+                }}
+                title={isState ? "Add the initial state, then the final state (T)" : "Add start / end (T)"}
+              >
+                {isState ? "● Start/End" : "⬭ Start/End"} <kbd>T</kbd>
               </button>
+              {isState && (
+                <button
+                  onClick={addAnyState}
+                  title="Add “any state”: draw from it what is possible from every state (cancel, delete…), once instead of from each state (A)"
+                >
+                  ✱ Any state <kbd>A</kbd>
+                </button>
+              )}
             </div>
           )}
           <div className="toolgroup">
@@ -1368,20 +1502,19 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               <Background gap={24} size={1.2} />
               <Controls showInteractive={false} />
               <MiniMap pannable zoomable className="minimap" style={{ width: 150, height: 100 }} />
-              {state && !compare && (
-                <ChangeLegend
-                  nodes={isSeq ? [...state.sequence.participants, ...[...walkItems(state.sequence.items)].map((l) => l.item)] : state.nodes}
-                  edges={isSeq ? [] : state.edges}
-                  onReveal={(ids) => {
-                    selectOnly(ids);
-                    const s = stateRef.current;
-                    fit(ids.flatMap((id) => {
-                      const edge = s?.edges.find((e) => e.id === id);
-                      return edge ? [edge.from, edge.to] : [id];
-                    }));
-                  }}
-                  onAccept={() => void send([{ op: "accept_changes" }]).then((r) => r && showToast("Changes accepted — Ctrl+Z to undo"))}
-                />
+              {state && (
+                <Panel position="top-left" className="legend-stack">
+                  {!compare && (
+                    <ChangeLegend
+                      nodes={isSeq ? [...state.sequence.participants, ...[...walkItems(state.sequence.items)].map((l) => l.item)] : state.nodes}
+                      edges={isSeq ? [] : state.edges}
+                      onReveal={revealInGraph}
+                      onAccept={() => void send([{ op: "accept_changes" }]).then((r) => r && showToast("Changes accepted — Ctrl+Z to undo"))}
+                    />
+                  )}
+                  {/* Hidden while comparing: the canvas then also shows removed states, which are not part of the lifecycle. */}
+                  {isState && !compare && <StateLegend nodes={state.nodes} edges={state.edges} instances={state.instances} onReveal={revealInGraph} />}
+                </Panel>
               )}
               {isSeq && freezeLanes && state && seqLayout.current && (
                 <FrozenLanes participants={state.sequence.participants} laneY={seqLayout.current.laneY} onSelect={(id) => selectOnly([id])} />
@@ -1420,6 +1553,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                   nodes={selectedNodes}
                   edges={selectedEdges}
                   decisionEdge={decisionEdge}
+                  diagram={state?.type === "state" ? "state" : "flowchart"}
                   onMark={createMark}
                   onShape={(shape) => void send([{ op: "update_node", id: selectedNodes[0].id, shape }])}
                   onStatus={(status: ChangeStatus | null) =>
@@ -1429,7 +1563,10 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                     ])
                   }
                   onAddNext={() => addNext(selectedNodes[0].id)}
-                  onEdit={() => setEditingId(selectedNodes[0]?.id ?? selectedEdges[0]?.id)}
+                  onEdit={() => {
+                    const id = selectedNodes[0]?.id ?? selectedEdges[0]?.id;
+                    if (id && !fixedLabel(id)) setEditingId(id);
+                  }}
                   onEdgeLabel={(label) => void send([{ op: "update_edge", id: selectedEdges[0].id, label }])}
                   onDelete={() =>
                     void rf.deleteElements({ nodes: selectedNodes.map((n) => ({ id: n.id })), edges: selectedEdges.map((e) => ({ id: e.id })) })
@@ -1442,14 +1579,23 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
             ) : (
               state &&
               (isSeq ? !state.sequence.participants.length && !state.sequence.items.length : !state.nodes.length) && (
-                <EmptyState
-                  onCopy={copy}
-                  sequence={isSeq}
-                  onSwitch={() => void send([{ op: "set_diagram_type", type: isSeq ? "flowchart" : "sequence" }])}
-                />
+                <EmptyState onCopy={copy} type={state.type} onSwitch={(type) => void send([{ op: "set_diagram_type", type }])} />
               )
             )}
-            <ContextHint nodes={selectedNodes.length} edges={selectedEdges.length} editing={!!editingId} empty={!nodes.length} sequence={isSeq} />
+            {isState && state.instances.some((i) => i.orphaned) && (
+              <div className="orphan-tray" title="Their state was deleted. The agent can move them with set_instance, or undo brings the state back.">
+                <b>Not in any state</b>
+                {state.instances
+                  .filter((i) => i.orphaned)
+                  .map((i) => (
+                    <span key={i.id} className="instance" title={`was in ${i.state}`}>
+                      <span className="instance-dot" aria-hidden />
+                      {i.label}
+                    </span>
+                  ))}
+              </div>
+            )}
+            <ContextHint nodes={selectedNodes.length} edges={selectedEdges.length} editing={!!editingId} empty={!nodes.length} sequence={isSeq} stateDiagram={isState} />
             {compare && (
               <div className="preview-banner compare">
                 <span>
@@ -1682,7 +1828,21 @@ function MissingSession() {
   );
 }
 
-function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number; edges: number; editing: boolean; empty: boolean; sequence: boolean }) {
+function ContextHint({
+  nodes,
+  edges,
+  editing,
+  empty,
+  sequence,
+  stateDiagram,
+}: {
+  nodes: number;
+  edges: number;
+  editing: boolean;
+  empty: boolean;
+  sequence: boolean;
+  stateDiagram?: boolean;
+}) {
   let hint: string;
   if (sequence) {
     if (editing) hint = "Enter save · Shift+Enter new line · Tab save & next message · Esc cancel";
@@ -1693,7 +1853,7 @@ function ContextHint({ nodes, edges, editing, empty, sequence }: { nodes: number
     return <div className="context-hint">{hint}</div>;
   }
   if (editing) hint = "Enter save · Tab save & add next step · Esc cancel";
-  else if (nodes === 1 && !edges) hint = "Enter rename · Tab add next step · M mark · drag a handle to connect · Del delete";
+  else if (nodes === 1 && !edges) hint = `Enter rename · Tab add next ${stateDiagram ? "state" : "step"} · M mark · drag a handle to connect · Del delete`;
   else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
   else if (nodes || edges) hint = `${nodes + edges} selected · drag any selected node to move them together · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
@@ -1747,11 +1907,21 @@ function ChannelSetup({ onCopy }: { onCopy: (text: string, what: string) => void
   );
 }
 
-function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, what: string) => void; sequence: boolean; onSwitch: () => void }) {
+const TYPE_NAME: Record<DiagramType, string> = { flowchart: "flowchart", sequence: "sequence diagram", state: "state diagram" };
+const TYPE_PITCH: Record<DiagramType, string> = {
+  flowchart: "a flowchart (business logic)",
+  sequence: "a sequence diagram (timeline, concurrency)",
+  state: "a state diagram (lifecycle of an order, ticket…)",
+};
+
+function EmptyState({ onCopy, type, onSwitch }: { onCopy: (text: string, what: string) => void; type: DiagramType; onSwitch: (type: DiagramType) => void }) {
+  const sequence = type === "sequence";
   const cmd = `claude mcp add --transport http --scope user visual-canvas ${location.origin}/mcp`;
   const prompt = sequence
     ? `At high detail, inspect <feature> and show its timing and concurrency (workers, transactions, locks, retries) as a sequence diagram on ${canvasRef()}. No code changes.`
-    : `At low detail, inspect <feature> and show its business logic on ${canvasRef()}. No code changes.`;
+    : type === "state"
+      ? `Inspect <entity> and show its lifecycle (states and the events that move it between them) as a state diagram on ${canvasRef()}. No code changes.`
+      : `At low detail, inspect <feature> and show its business logic on ${canvasRef()}. No code changes.`;
   const skill = `mkdir -p ~/.claude/skills/visual-canvas && curl -s ${location.origin}/skill.md -o ~/.claude/skills/visual-canvas/SKILL.md`;
   return (
     <div className="empty">
@@ -1787,13 +1957,23 @@ function EmptyState({ onCopy, sequence, onSwitch }: { onCopy: (text: string, wha
           </li>
         </ol>
         <p className="muted">
-          {sequence ? "Or sketch yourself: press P for a participant lane and N for a message." : "Or sketch yourself: double-click anywhere, or press N."}
+          {sequence
+            ? "Or sketch yourself: press P for a participant lane and N for a message."
+            : type === "state"
+              ? "Or sketch yourself: T for the start, N for a state, Tab for the next one."
+              : "Or sketch yourself: double-click anywhere, or press N."}
         </p>
         <p className="muted">
-          This canvas is a <b>{sequence ? "sequence diagram" : "flowchart"}</b>.{" "}
-          <button className="linklike" onClick={onSwitch}>
-            {sequence ? "Use a flowchart instead" : "Use a sequence diagram (timeline, concurrency) instead"}
-          </button>
+          This canvas is a <b>{TYPE_NAME[type]}</b>. Use{" "}
+          {DIAGRAM_TYPES.filter((t) => t !== type).map((t, i) => (
+            <span key={t}>
+              {i > 0 && " or "}
+              <button className="linklike" onClick={() => onSwitch(t)}>
+                {TYPE_PITCH[t]}
+              </button>
+            </span>
+          ))}{" "}
+          instead.
         </p>
       </div>
     </div>

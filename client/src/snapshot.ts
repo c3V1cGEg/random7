@@ -10,7 +10,8 @@ const MAX_SIDE = 16000;
 const CHROME = ["react-flow__handle", "react-flow__resize-control", "edge-knob"];
 
 /** What the picture shows: nodes, edges (whose curves can bow far past the nodes), edge labels, mark rings. */
-const DRAWN = [".react-flow__node", ".react-flow__edge-path", ".react-flow__edgelabel-renderer > *", ".react-flow__viewport-portal > *"];
+// Instance chips and a choice's name sit outside their node's box, so they are measured on their own.
+const DRAWN = [".react-flow__node", ".react-flow__node .instances", ".react-flow__node .choice-id", ".react-flow__edge-path", ".react-flow__edgelabel-renderer > *", ".react-flow__viewport-portal > *"];
 
 /** The flow-space box around everything drawn in `viewport`, measured on screen and mapped back with `toFlow`. */
 export function drawnBounds(viewport: HTMLElement, toFlow: (p: XYPosition) => XYPosition): Rect | null {

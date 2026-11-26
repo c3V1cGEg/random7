@@ -19,6 +19,8 @@ export interface SelectionBarProps {
   onEdit(): void;
   onEdgeLabel(label: string): void;
   onDelete(): void;
+  /** State diagrams offer state shapes instead of flowchart ones. */
+  diagram?: "flowchart" | "state";
 }
 
 const SHAPES: Array<[NodeShape, string, string]> = [
@@ -26,6 +28,10 @@ const SHAPES: Array<[NodeShape, string, string]> = [
   ["decision", "◇", "Decision"],
   ["terminal", "⬭", "Start / End"],
   ["store", "⛁", "Data store (database, queue table, file)"],
+];
+const STATE_SHAPES: Array<[NodeShape, string, string]> = [
+  ["state", "▢", "State"],
+  ["choice", "◇", "Choice (guards go on its outgoing transitions)"],
 ];
 
 export function nodeRect(n: CanvasNode) {
@@ -129,7 +135,7 @@ export function SelectionBar(p: SelectionBarProps) {
       <StatusChips statuses={[...p.nodes, ...p.edges].map((x) => x.data?.status)} onStatus={p.onStatus} />
       {singleNode && (
         <span className="group">
-          {SHAPES.map(([shape, icon, label]) => (
+          {(p.diagram === "state" ? (["initial", "final", "any"].includes(singleNode.data.shape) ? [] : STATE_SHAPES) : SHAPES).map(([shape, icon, label]) => (
             <button
               key={shape}
               className={`tool${singleNode.data.shape === shape ? " on" : ""}`}
@@ -139,12 +145,16 @@ export function SelectionBar(p: SelectionBarProps) {
               {icon}
             </button>
           ))}
-          <button className="tool" title="Rename (Enter)" onClick={p.onEdit}>
-            ✎
-          </button>
-          <button className="tool wide" title="Add connected next step (Tab)" onClick={p.onAddNext}>
-            + Next
-          </button>
+          {!["initial", "final", "choice", "any"].includes(singleNode.data.shape) && (
+            <button className="tool" title="Rename (Enter)" onClick={p.onEdit}>
+              ✎
+            </button>
+          )}
+          {singleNode.data.shape !== "final" && (
+            <button className="tool wide" title={`Add connected next ${p.diagram === "state" ? "state" : "step"} (Tab)`} onClick={p.onAddNext}>
+              + Next
+            </button>
+          )}
         </span>
       )}
       {singleEdge && (

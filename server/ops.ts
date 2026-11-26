@@ -128,10 +128,17 @@ export const OperationSchema = z.discriminatedUnion("op", [
     op: z.literal("add_node"),
     id: id.optional().describe("Optional explicit id; generated (n<k>) if omitted"),
     label: label.describe("Title line; optional detail lines after \\n (prefix '+ ' added, '- ' dropped, '~ ' modified)"),
-    shape: shape.optional().describe("action (default) | decision | terminal | store (a persistent data store, not a save step)"),
+    shape: shape.optional().describe("Flowcharts: action (default) | decision | terminal | store (a persistent data store, not a save step). State diagrams: state (default) | initial | final | choice | any (transitions possible from every state)"),
     status: status.optional(),
   }),
-  z.object({ op: z.literal("update_node"), id, label: label.optional(), shape: shape.optional(), status: statusUpdate }),
+  z.object({
+    op: z.literal("update_node"),
+    id,
+    newId: id.optional().describe("State diagrams: rename the state's value (its id, e.g. InProgress); transitions, marks and instances follow"),
+    label: label.optional(),
+    shape: shape.optional(),
+    status: statusUpdate,
+  }),
   z.object({ op: z.literal("remove_node"), id }),
   z.object({
     op: z.literal("add_edge"),
@@ -171,6 +178,22 @@ export const OperationSchema = z.discriminatedUnion("op", [
     .describe("Answer mark #id in its own thread (the way to respond to a user's mark; the mark's text stays as written)"),
   z.object({ op: z.literal("remove_annotation"), id: z.number().int().positive() }),
   z.object({ op: z.literal("set_direction"), direction: z.enum(["TD", "LR"]) }),
+  z.object({
+    op: z.literal("set_instance"),
+    id,
+    label: label.optional().describe('Display name, e.g. "Order #1042" (required when creating)'),
+    state: id.optional().describe("Id of the state it is in now (required when creating)"),
+    fields: z
+      .record(z.string().max(40), z.string().max(120))
+      .nullable()
+      .optional()
+      .describe("Field values shown on hover; replaces the previous ones, null clears them"),
+    via: z
+      .union([id, z.array(id).min(1).max(10)])
+      .optional()
+      .describe("The transition taken to get to `state`, or the path of transitions through choice points (the editor highlights them)"),
+  }).describe("State diagrams: create or update a runtime instance (e.g. an order) and move it between states"),
+  z.object({ op: z.literal("remove_instance"), id }),
   ...sequenceOperations(),
   z.object({
     op: z.literal("accept_changes"),

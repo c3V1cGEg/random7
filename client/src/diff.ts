@@ -1,5 +1,5 @@
 import type { BrowserState } from "../../server/store.ts";
-import type { Annotation, ChangeStatus, GraphEdge, GraphNode, XY } from "../../server/types.ts";
+import type { Annotation, ChangeStatus, GraphEdge, GraphNode, Instance, XY } from "../../server/types.ts";
 import { walkItems, type SeqItem, type SeqParticipant, type Sequence } from "../../server/sequence.ts";
 
 /**
@@ -11,7 +11,9 @@ export type Change = "added" | "removed" | "changed";
 
 export interface ElementChange {
   id: string;
-  type: "node" | "edge" | "participant" | "message" | "note" | "activation" | "fragment";
+  type: "node" | "edge" | "participant" | "message" | "note" | "activation" | "fragment" | "instance";
+  /** What to show when the change is clicked, when that is not the element itself (an instance: its state). */
+  target?: string;
   change: Change;
   /** How the element reads (in the newer revision, or the older one when removed). */
   name: string;
@@ -102,6 +104,23 @@ function flowchartChanges(a: BrowserState, b: BrowserState): ElementChange[] {
     (e) => e.label ?? "",
   );
   return [...nodes, ...edges];
+}
+
+/** State diagrams: instances placed, moved, changed or removed. */
+function instanceChanges(a: BrowserState, b: BrowserState): ElementChange[] {
+  const title = (s: BrowserState, id: string) => (id === "final" ? "End" : short(s.nodes.find((n) => n.id === id)?.label ?? id, 24));
+  return compare<Instance>(
+    a.instances ?? [],
+    b.instances ?? [],
+    { state: (i) => i.state, text: (i) => i.label, fields: (i) => i.fields ?? {}, orphaned: (i) => !!i.orphaned },
+    (i) => {
+      const old = (a.instances ?? []).find((x) => x.id === i.id);
+      const inB = (b.instances ?? []).some((x) => x.id === i.id);
+      const where = old && inB && old.state !== i.state ? `${title(a, old.state)} → ${title(b, i.state)}` : `in ${title(inB ? b : a, i.state)}`;
+      return { type: "instance", name: `${short(i.label, 30)} (${where})`, target: i.state };
+    },
+    (i) => i.label,
+  );
 }
 
 type SeqElement = (SeqParticipant | SeqItem) & { where?: string };
@@ -241,14 +260,15 @@ const sameBox = (p?: XY, q?: XY) => !!p && !!q && p.x === q.x && p.y === q.y && 
 export function diffRevisions(a: BrowserState, b: BrowserState): RevisionDiff {
   const from = a.viewing ?? a.revision;
   const to = b.viewing ?? b.revision;
-  const flow = b.type === "flowchart";
+  // Flowcharts and state diagrams are both nodes and edges.
+  const flow = b.type !== "sequence";
   const both = (id: string) => a.nodes.some((n) => n.id === id) && b.nodes.some((n) => n.id === id);
   const bothEdge = (id: string) => a.edges.some((e) => e.id === id) && b.edges.some((e) => e.id === id);
   return {
     from,
     to,
     type: b.type,
-    elements: a.type !== b.type ? [] : flow ? flowchartChanges(a, b) : sequenceChanges(a, b),
+    elements: a.type !== b.type ? [] : flow ? [...flowchartChanges(a, b), ...(b.type === "state" ? instanceChanges(a, b) : [])] : sequenceChanges(a, b),
     marks: markChanges(a.annotations, b.annotations),
     moved: flow ? b.nodes.filter((n) => both(n.id) && a.layout[n.id] && b.layout[n.id] && !sameBox(a.layout[n.id], b.layout[n.id])).map((n) => n.id) : [],
     reanchored: flow ? b.edges.filter((e) => bothEdge(e.id) && JSON.stringify(a.anchors[e.id] ?? {}) !== JSON.stringify(b.anchors[e.id] ?? {})).map((e) => e.id) : [],

@@ -169,6 +169,67 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 @keyframes agent-flash { 0% { box-shadow: 0 0 0 3px #7c4dff88; } 100% { box-shadow: 0 0 0 0 #7c4dff00; } }
 .node .label { position: relative; white-space: pre-wrap; word-break: break-word; }
 
+/* state diagrams: rounded states, [*] dots, small choice diamonds, instance chips */
+.node-state {
+  width: 160px; min-height: 52px; padding: 10px 14px; background: var(--node);
+  border: 1.6px solid var(--node-border); border-radius: 16px;
+}
+.node.selected.node-state { border-color: var(--accent); box-shadow: 0 0 0 3px #2f6fde33; }
+.node.touched.node-state, .node.touched.node-initial, .node.touched.node-final { animation: agent-glow 1.3s ease-out 3; }
+.node[class*="status-"].node-state { background: var(--sb); border: 2.2px solid var(--sc); }
+.node.status-removed.node-state { border-style: dashed; }
+.node-state.occupied { border-color: #7c4dff; border-width: 2.4px; box-shadow: 0 0 0 4px #7c4dff1f; }
+.node-initial { width: 28px; height: 28px; border-radius: 50%; background: var(--node-border); }
+.node-final { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--node-border); background: var(--node); }
+.node-final::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--node-border); }
+.node.selected.node-initial, .node.selected.node-final { box-shadow: 0 0 0 3px #2f6fde55; }
+.node-final.occupied { box-shadow: 0 0 0 4px #7c4dff33; }
+.node-choice { width: 44px; height: 44px; }
+.node-choice .diamond { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.node-choice .diamond polygon { fill: #fffaf0; stroke: var(--node-border); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.choice-id { position: absolute; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.node-initial .badges, .node-final .badges, .node-choice .badges { top: -14px; right: -14px; }
+.node-initial .react-flow__handle, .node-final .react-flow__handle, .node-choice .react-flow__handle, .node-any .react-flow__handle { opacity: 0; }
+/* Nothing leads into "any state" or the start, nothing out of the end: no handle there to drag from or drop on. */
+.node-any .react-flow__handle.target, .node-initial .react-flow__handle.target, .node-final .react-flow__handle.source { display: none; }
+.node-any {
+  width: 112px; height: 34px; border-radius: 999px; border: 1.6px dashed #6b7280; background: #f6f8fa;
+  font-size: 12px; font-weight: 600; color: #4b5563;
+}
+.node.selected.node-any { border-color: var(--accent); box-shadow: 0 0 0 3px #2f6fde33; }
+.node.touched.node-any { animation: agent-glow 1.3s ease-out 3; }
+.react-flow__edge-path.edge-any { stroke-dasharray: 7 5; }
+.instances {
+  position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 3;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; width: max-content; max-width: 260px; pointer-events: all;
+}
+.instance {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 6px; border-radius: 999px; cursor: default;
+  font-size: 11.5px; font-weight: 600; color: #3b1f8f; background: #f1ebff; border: 1px solid #7c4dff66; white-space: nowrap;
+}
+.instance-dot { width: 7px; height: 7px; border-radius: 50%; background: #7c4dff; }
+.instance-more { font-weight: 400; color: #7c4dffaa; font-size: 10.5px; }
+.instance.touched { animation: agent-glow 1.3s ease-out 3; }
+.instance { position: relative; }
+.instance-card {
+  display: none; position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 20;
+  min-width: 150px; padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #7c4dff55;
+  box-shadow: 0 6px 18px #2b1a5a22; color: #1f2937; font-weight: 400; text-align: left; white-space: nowrap;
+}
+.instance:hover .instance-card { display: block; }
+.instance-card b { display: block; font-size: 12.5px; }
+.instance-card .muted { font-size: 10.5px; color: var(--muted); font-family: ui-monospace, monospace; }
+.instance-card dl { margin: 6px 0 0; padding-top: 6px; border-top: 1px solid #0000001a; display: grid; gap: 2px; }
+.instance-card dl div { display: flex; gap: 10px; justify-content: space-between; font-size: 11.5px; }
+.instance-card dt { color: var(--muted); }
+.instance-card dd { margin: 0; font-weight: 600; }
+.orphan-tray {
+  position: absolute; left: 12px; bottom: 12px; z-index: 5; max-width: 320px; padding: 8px 10px; border-radius: 8px;
+  background: var(--bg); border: 1px dashed #7c4dff88; font-size: 12px; box-shadow: 0 2px 8px #0000000f;
+}
+.orphan-tray b { display: block; margin-bottom: 4px; font-size: 11px; color: var(--muted); font-weight: 600; }
+.orphan-tray .instance { margin: 2px 4px 2px 0; opacity: 0.75; }
+
 /* change status: tinted fill + coloured border + tag; removed is dashed and struck through */
 .status-new { --sc: var(--s-new); --sb: var(--s-new-bg); }
 .status-changed { --sc: var(--s-changed); --sb: var(--s-changed-bg); }
@@ -419,6 +480,28 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .agent b { font-weight: 700; }
 
 /* ---- change legend ---- */
+.legend-stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; max-height: calc(100% - 140px); }
+.state-legend { min-width: 190px; max-width: 340px; overflow-y: auto; }
+.legend-toggle { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; }
+.legend-toggle .count { margin-left: auto; font-weight: 600; }
+.state-row { gap: 7px; }
+.state-swatch { flex: none; width: 14px; height: 10px; border-radius: 4px; border: 1.4px solid var(--node-border); background: var(--node); }
+.state-swatch[class*="status-"] { background: var(--sb); border-color: var(--sc); }
+.state-swatch.occupied { border-color: #7c4dff; box-shadow: 0 0 0 2px #7c4dff2e; }
+.state-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.state-name code { margin-left: 5px; font-size: 10.5px; color: var(--muted); }
+.state-tag { flex: none; font-size: 9.5px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+.state-tag.warn { color: #b45309; border-color: #f59e0b88; background: #fffbeb; }
+.state-row.unreachable .state-name { font-style: italic; color: var(--muted); }
+.state-row .count { min-width: 14px; text-align: right; }
+.state-row .count.has { color: #6d28d9; font-weight: 700; }
+.state-tag.dead { color: #b91c1c; border-color: #ef444488; background: #fef2f2; }
+.legend-any { margin: 5px 4px 0; padding-top: 5px; border-top: 1px solid var(--line); font-size: 11.5px; }
+.legend-any b { display: block; font-size: 10.5px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+.legend-any div { color: var(--ink, #1f2328); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legend-warn { color: #b91c1c; font-size: 11.5px; margin-top: 3px; }
+.legend-warn code { font-size: 10.5px; }
+.legend-foot { margin: 5px 4px 0; padding-top: 5px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 .legend {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 12px;
   box-shadow: 0 2px 8px #0000000f; display: flex; flex-direction: column; gap: 1px; min-width: 150px;

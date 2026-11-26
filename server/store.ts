@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { parseMermaid, toMermaid, validateId, normalizeLabel, normalizeNodeLabel } from "./mermaid.ts";
+import { STATE_HEADER, parseStateDiagram, stateIdProblem, stateToMermaid } from "./stateDiagram.ts";
 import type { Operation } from "./ops.ts";
 import { allIds, countItems, emptySequence, findItem, itemParticipants, parseSequence, sequenceToMermaid, walkItems, type Sequence } from "./sequence.ts";
 import { SEQUENCE_OPS, acceptSequenceChanges, allocSeqId, applySequenceOp } from "./sequenceOps.ts";
@@ -18,6 +19,14 @@ import {
   type ChangeStatus,
   type DiagramType,
   type Direction,
+  type Instance,
+  ANY_ID,
+  FIXED_STATE_IDS,
+  FINAL_ID,
+  FLOW_SHAPES,
+  INITIAL_ID,
+  STATE_SHAPES,
+  isGraphType,
   type GraphEdge,
   type GraphNode,
   type Reply,
@@ -36,6 +45,8 @@ interface Model {
   nodes: Map<string, GraphNode>;
   edges: Map<string, GraphEdge>;
   annotations: Map<number, Annotation>;
+  /** State diagrams: runtime objects and the state each one is in (empty otherwise). */
+  instances: Map<string, Instance>;
   nextAnnotationId: number;
   nodeCounter: number;
   edgeCounter: number;
@@ -51,6 +62,8 @@ export interface AgentSnapshot {
   diagram: string;
   /** awaitingReply: the user has the last word on this mark and expects an answer in its thread. */
   annotations: Array<Annotation & { awaitingReply?: true }>;
+  /** State diagrams only. */
+  instances?: Instance[];
 }
 
 export interface BrowserState {
@@ -64,6 +77,7 @@ export interface BrowserState {
   nodes: GraphNode[];
   edges: GraphEdge[];
   annotations: Annotation[];
+  instances: Instance[];
   diagram: string;
   /** The user's undo/redo steps at this revision, oldest first (the last one is undone next). */
   history: { undo: HistoryItem[]; redo: HistoryItem[] };
@@ -148,6 +162,7 @@ export interface StoredSession {
     nodes: GraphNode[];
     edges: GraphEdge[];
     annotations: Annotation[];
+    instances?: Instance[];
     nextAnnotationId: number;
     nodeCounter: number;
     edgeCounter: number;
@@ -183,6 +198,7 @@ interface Delta {
   nodes: Map<string, [GraphNode | undefined, GraphNode | undefined]>;
   edges: Map<string, [GraphEdge | undefined, GraphEdge | undefined]>;
   annotations: Map<number, [Annotation | undefined, Annotation | undefined]>;
+  instances: Map<string, [Instance | undefined, Instance | undefined]>;
   direction?: [Direction, Direction];
 }
 
@@ -209,6 +225,7 @@ type StoredDelta = {
   nodes: Array<[string, GraphNode | null, GraphNode | null]>;
   edges: Array<[string, GraphEdge | null, GraphEdge | null]>;
   annotations: Array<[number, Annotation | null, Annotation | null]>;
+  instances?: Array<[string, Instance | null, Instance | null]>;
 };
 type StoredEntry = Omit<HistoryEntry, "delta"> & { delta?: StoredDelta };
 
@@ -255,10 +272,12 @@ function emptyModel(type: DiagramType = "flowchart"): Model {
     type,
     sequence: emptySequence(),
     seqCounters: {},
-    direction: "TD",
+    // State diagrams (lifecycles) read left to right; flowcharts top-down.
+    direction: type === "state" ? "LR" : "TD",
     nodes: new Map(),
     edges: new Map(),
     annotations: new Map(),
+    instances: new Map(),
     nextAnnotationId: 1,
     nodeCounter: 0,
     edgeCounter: 0,
@@ -274,6 +293,7 @@ function cloneModel(m: Model): Model {
     nodes: new Map(m.nodes),
     edges: new Map(m.edges),
     annotations: new Map(m.annotations),
+    instances: new Map(m.instances),
     usedIds: new Set(m.usedIds),
   };
 }
@@ -312,7 +332,7 @@ export class CanvasStore {
   constructor(name = "default", title?: string, type: DiagramType = "flowchart") {
     this.name = name;
     this.title = title;
-    this.model.type = type;
+    this.model = emptyModel(type);
     this.createdAt = this.updatedAt = new Date().toISOString();
     this.revisions.push({ revision: 0, parent: null, at: this.createdAt, source: "user", ops: [], count: 0 });
     this.syncHead();
@@ -361,7 +381,7 @@ export class CanvasStore {
     const accepted: Record<string, XY> = {};
     for (const [id, p] of Object.entries(positions)) {
       if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
-      if (this.model.type !== "flowchart" || (!this.model.nodes.has(id) && !this.layoutMap.has(id))) continue;
+      if (!isGraphType(this.model.type) || (!this.model.nodes.has(id) && !this.layoutMap.has(id))) continue;
       accepted[id] = { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 };
       const size = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.min(1200, Math.max(40, Math.round(v))) : undefined);
       const w = size(p.w);
@@ -373,7 +393,7 @@ export class CanvasStore {
     }
     const ends: Record<string, EdgeEnds> = {};
     for (const [id, patch] of Object.entries(anchors)) {
-      if (this.model.type !== "flowchart" || (!this.model.edges.has(id) && !this.anchorMap.has(id))) continue;
+      if (!isGraphType(this.model.type) || (!this.model.edges.has(id) && !this.anchorMap.has(id))) continue;
       step.anchorsBefore[id] = this.anchorMap.get(id) ?? null;
       const next: EdgeEnds = { ...this.anchorMap.get(id) };
       for (const end of ["from", "to"] as const) {
@@ -406,6 +426,7 @@ export class CanvasStore {
       type: this.model.type,
       diagram: this.mermaid(),
       annotations: this.annotationList().map((a) => (awaitingAgent(a) ? { ...a, awaitingReply: true as const } : a)),
+      ...(this.model.type === "state" ? { instances: [...this.model.instances.values()] } : {}),
     };
   }
 
@@ -440,6 +461,7 @@ export class CanvasStore {
       nodes: [...m.nodes.values()],
       edges: [...m.edges.values()],
       annotations: [...m.annotations.values()].sort((a, b) => a.id - b.id),
+      instances: [...m.instances.values()],
       diagram: mermaidOf(m),
       history: { undo: d.undo.map(historyItem), redo: d.redo.map(historyItem) },
       layout: Object.fromEntries(d.layout),
@@ -704,6 +726,12 @@ export class CanvasStore {
     enforceLimits(draft);
 
     const undoable = source === "user" ? this.recordHistory(diffModels(this.model, draft), log, undoGroup) : undefined;
+    // A renamed node keeps its place (copied, so undoing the rename finds the old id's place too).
+    for (const op of log) {
+      if (op.op !== "update_node" || typeof op.newId !== "string") continue;
+      const at = this.layoutMap.get(op.id as string);
+      if (at) this.layoutMap.set(op.newId, at);
+    }
     this.model = draft;
     this.commit(source, log, actor);
     return {
@@ -731,9 +759,10 @@ export class CanvasStore {
     }
     const header = mermaidSource.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("%%"));
     if (header?.replace(/;$/, "") === "sequenceDiagram") return this.replaceSequence(mermaidSource, annotations, source, actor);
-    const { graph, generatedEdgeIds } = parseMermaid(mermaidSource);
+    const type: DiagramType = STATE_HEADER.test(header?.replace(/;$/, "") ?? "") ? "state" : "flowchart";
+    const { graph, generatedEdgeIds } = type === "state" ? parseStateDiagram(mermaidSource) : parseMermaid(mermaidSource);
     const draft = cloneModel(this.model);
-    draft.type = "flowchart";
+    draft.type = type;
     draft.sequence = emptySequence();
     draft.direction = graph.direction;
     draft.nodes = new Map();
@@ -764,12 +793,14 @@ export class CanvasStore {
     } else {
       pruneAnnotationTargets(draft, sideEffects);
     }
+    if (type === "state") orphanInstances(draft, sideEffects);
+    else clearInstances(draft, sideEffects);
     enforceLimits(draft);
 
     this.model = draft;
     this.commit(
       source,
-      [{ op: "replace_diagram", nodes: draft.nodes.size, edges: draft.edges.size, annotations }, ...sideEffects],
+      [{ op: "replace_diagram", ...(type === "state" ? { type } : {}), nodes: draft.nodes.size, edges: draft.edges.size, annotations }, ...sideEffects],
       actor,
     );
     const finalGenerated = [...draft.edges.keys()].filter((k) => renamed.has(k));
@@ -777,6 +808,7 @@ export class CanvasStore {
       revision: this._revision,
       applied: 1,
       ...(finalGenerated.length ? { generatedEdgeIds: finalGenerated } : {}),
+      ...(type === "state" ? { type } : {}),
       ...(sideEffects.length ? { sideEffects } : {}),
     };
   }
@@ -794,6 +826,7 @@ export class CanvasStore {
     draft.edges = new Map();
     for (const id of allIds(sequence)) draft.usedIds.add(id);
     const sideEffects: ChangeOp[] = [];
+    clearInstances(draft, sideEffects);
     if (annotations === "clear") {
       for (const a of draft.annotations.values()) sideEffects.push({ op: "remove_annotation", id: a.id });
       draft.annotations = new Map();
@@ -989,6 +1022,7 @@ export class CanvasStore {
 
 function mermaidOf(m: Model): string {
   if (m.type === "sequence") return sequenceToMermaid(m.sequence);
+  if (m.type === "state") return stateToMermaid({ direction: m.direction, nodes: [...m.nodes.values()], edges: [...m.edges.values()] });
   return toMermaid({ direction: m.direction, nodes: [...m.nodes.values()], edges: [...m.edges.values()] });
 }
 
@@ -1002,6 +1036,7 @@ function storeModel(m: Model): StoredModel {
     nodes: [...m.nodes.values()],
     edges: [...m.edges.values()],
     annotations: [...m.annotations.values()],
+    ...(m.instances.size ? { instances: [...m.instances.values()] } : {}),
     nextAnnotationId: m.nextAnnotationId,
     nodeCounter: m.nodeCounter,
     edgeCounter: m.edgeCounter,
@@ -1011,13 +1046,14 @@ function storeModel(m: Model): StoredModel {
 
 function loadModel(m: StoredModel): Model {
   const model: Model = {
-    type: m.type === "sequence" ? "sequence" : "flowchart",
+    type: m.type === "sequence" || m.type === "state" ? m.type : "flowchart",
     sequence: m.sequence ?? emptySequence(),
     seqCounters: m.seqCounters ?? {},
     direction: m.direction === "LR" ? "LR" : "TD",
     nodes: new Map(m.nodes.map((n) => [n.id, n])),
     edges: new Map(m.edges.map((e) => [e.id, e])),
     annotations: new Map(m.annotations.map((a) => [a.id, a])),
+    instances: new Map((m.instances ?? []).map((i) => [i.id, i])),
     nextAnnotationId: m.nextAnnotationId,
     nodeCounter: m.nodeCounter,
     edgeCounter: m.edgeCounter,
@@ -1046,14 +1082,17 @@ const unpairs = <K, V>(list: Array<[K, V | null, V | null]> = []): Map<K, [V | u
 
 function storeEntry({ delta, ...rest }: HistoryEntry): StoredEntry {
   if (!delta) return rest;
-  const { nodes, edges, annotations, ...whole } = delta;
-  return { ...rest, delta: { ...whole, nodes: pairs(nodes), edges: pairs(edges), annotations: pairs(annotations) } };
+  const { nodes, edges, annotations, instances, ...whole } = delta;
+  return {
+    ...rest,
+    delta: { ...whole, nodes: pairs(nodes), edges: pairs(edges), annotations: pairs(annotations), ...(instances.size ? { instances: pairs(instances) } : {}) },
+  };
 }
 
 function loadEntry({ delta, ...rest }: StoredEntry): HistoryEntry {
   if (!delta) return rest;
-  const { nodes, edges, annotations, ...whole } = delta;
-  return { ...rest, delta: { ...whole, nodes: unpairs(nodes), edges: unpairs(edges), annotations: unpairs(annotations) } };
+  const { nodes, edges, annotations, instances, ...whole } = delta;
+  return { ...rest, delta: { ...whole, nodes: unpairs(nodes), edges: unpairs(edges), annotations: unpairs(annotations), instances: unpairs(instances) } };
 }
 
 /** Structural equality that ignores key order (objects here are flat apart from id arrays). */
@@ -1083,12 +1122,13 @@ function diffModels(before: Model, after: Model): Delta {
     nodes: diffMap(before.nodes, after.nodes),
     edges: diffMap(before.edges, after.edges),
     annotations: diffMap(before.annotations, after.annotations),
+    instances: diffMap(before.instances, after.instances),
     ...(before.direction !== after.direction ? { direction: [before.direction, after.direction] as [Direction, Direction] } : {}),
   };
 }
 
 function isEmptyDelta(d: Delta): boolean {
-  return !d.nodes.size && !d.edges.size && !d.annotations.size && !d.direction && !d.sequence && !d.type;
+  return !d.nodes.size && !d.edges.size && !d.annotations.size && !d.instances.size && !d.direction && !d.sequence && !d.type;
 }
 
 function mergeMap<K, V>(older: Map<K, [V | undefined, V | undefined]>, newer: Map<K, [V | undefined, V | undefined]>) {
@@ -1117,6 +1157,7 @@ function mergeDeltas(older: Delta, newer: Delta): Delta {
     nodes: mergeMap(older.nodes, newer.nodes),
     edges: mergeMap(older.edges, newer.edges),
     annotations: mergeMap(older.annotations, newer.annotations),
+    instances: mergeMap(older.instances, newer.instances),
     ...(direction && direction[0] !== direction[1] ? { direction } : {}),
   };
 }
@@ -1146,6 +1187,7 @@ function applyDelta(m: Model, d: Delta, undo: boolean): { ops: ChangeOp[]; confl
   step(m.edges, d.edges, "edge", (k) => k);
   step(m.nodes, d.nodes, "node", (k) => k);
   step(m.annotations, d.annotations, "annotation", (k) => `mark #${k}`);
+  step(m.instances, d.instances, "instance", (k) => `instance ${k}`);
   if (d.type) {
     const [expected, target] = undo ? [d.type[1], d.type[0]] : d.type;
     if (m.type !== expected) conflicts.push("diagram type");
@@ -1171,7 +1213,7 @@ function applyDelta(m: Model, d: Delta, undo: boolean): { ops: ChangeOp[]; confl
     }
   }
   // Removes first (edges before nodes), then additions/updates (nodes before edges).
-  const order = (op: ChangeOp) => ["remove_annotation", "remove_edge", "remove_node", "set_diagram_type", "restore_sequence", "set_direction", "add_node", "update_node", "add_edge", "update_edge", "add_annotation", "update_annotation"].indexOf(op.op);
+  const order = (op: ChangeOp) => ["remove_annotation", "remove_edge", "remove_node", "set_diagram_type", "restore_sequence", "set_direction", "add_node", "update_node", "add_edge", "update_edge", "add_annotation", "update_annotation", "remove_instance", "add_instance", "update_instance"].indexOf(op.op);
   return { ops: [...removes, ...upserts].sort((a, b) => order(a) - order(b)), conflicts };
 }
 
@@ -1215,23 +1257,41 @@ function applyOp(
     pruneAnnotationTargets(m, sideEffects, log);
     return;
   }
-  if (["add_node", "update_node", "remove_node", "add_edge", "update_edge", "remove_edge", "set_direction"].includes(op.op)) {
+  if (["add_node", "update_node", "remove_node", "add_edge", "update_edge", "remove_edge", "set_direction"].includes(op.op) && !isGraphType(m.type)) {
     requireType(m, "flowchart", op.op);
   }
+  if (op.op === "set_instance" || op.op === "remove_instance") requireType(m, "state", op.op);
   switch (op.op) {
     case "set_diagram_type": {
       if (op.type === m.type) return;
-      if (m.nodes.size || m.sequence.participants.length || m.sequence.items.length) {
+      if (m.nodes.size || m.sequence.participants.length || m.sequence.items.length || m.instances.size) {
         throw new CanvasError("not_empty", `the canvas already holds a ${m.type}; switch types on an empty canvas, or redraw with canvas_replace_diagram`);
       }
       m.type = op.type;
+      // Each type's natural reading direction: lifecycles left to right, flowcharts top-down.
+      const natural = op.type === "state" ? "LR" : "TD";
+      if (op.type !== "sequence" && m.direction !== natural) {
+        m.direction = natural;
+        log.push({ op: "set_direction", direction: natural });
+      }
       log.push({ op: "set_diagram_type", type: op.type });
       return;
     }
     case "add_node": {
-      const id = op.id ?? allocId(m, "n");
-      claimId(m, id, "node");
-      const node: GraphNode = { id, label: checkNodeLabel(op.label), shape: (op.shape as GraphNode["shape"]) ?? "action" };
+      const shape = checkShape(m, (op.shape as GraphNode["shape"]) ?? (m.type === "state" ? "state" : "action"));
+      const pseudo = m.type === "state" ? FIXED_STATE_IDS[shape as keyof typeof FIXED_STATE_IDS] : undefined;
+      if (pseudo && m.nodes.has(pseudo)) throw new CanvasError("duplicate_id", `this state diagram already has its ${shape} state (${pseudo})`, { id: pseudo });
+      if (pseudo && op.id && op.id !== pseudo) throw new CanvasError("invalid_id", `the ${shape} state always has the id ${pseudo}`);
+      if (!pseudo && m.type === "state" && op.id) {
+        const problem = stateIdProblem(op.id);
+        if (problem) throw new CanvasError("invalid_id", problem);
+      }
+      const id = pseudo ?? op.id ?? allocId(m, "n");
+      if (pseudo) validateId(id, "node");
+      else claimId(m, id, "node");
+      m.usedIds.add(id);
+      const fixedLabel: Partial<Record<string, string>> = { initial: "Start", final: "End", any: "Any state", choice: id };
+      const node: GraphNode = { id, label: fixedLabel[shape] ?? checkNodeLabel(op.label), shape };
       if (op.status) node.status = op.status;
       m.nodes.set(id, node);
       created.nodes.push(id);
@@ -1242,10 +1302,21 @@ function applyOp(
       const node = requireNode(m, op.id);
       const next = { ...node };
       const entry: ChangeOp = { op: "update_node", id: op.id };
-      if (op.label !== undefined) next.label = entry.label = checkNodeLabel(op.label);
-      if (op.shape !== undefined) next.shape = entry.shape = op.shape as GraphNode["shape"];
+      const pseudo = (s: string) => s === "initial" || s === "final" || s === "any";
+      if (op.shape !== undefined && op.shape !== node.shape) {
+        if (pseudo(op.shape) || pseudo(node.shape)) throw new CanvasError("invalid_shape", "the start, end and any-state markers cannot change shape; add or remove them instead");
+        next.shape = entry.shape = checkShape(m, op.shape as GraphNode["shape"]);
+        if (next.shape === "choice") next.label = next.id;
+      }
+      if (op.label !== undefined && next.shape !== "choice" && !pseudo(next.shape)) next.label = entry.label = checkNodeLabel(op.label);
       if (op.status !== undefined) setStatus(next, entry, op.status);
-      m.nodes.set(op.id, next);
+      if (op.newId !== undefined && op.newId !== op.id) {
+        renameNode(m, next, op.newId);
+        entry.newId = op.newId;
+        m.nodes.set(op.newId, { ...next, id: op.newId, ...(next.shape === "choice" ? { label: op.newId } : {}) });
+      } else {
+        m.nodes.set(op.id, next);
+      }
       log.push(entry);
       return;
     }
@@ -1263,11 +1334,13 @@ function applyOp(
       m.nodes.delete(op.id);
       log.push({ op: "remove_node", id: op.id });
       pruneAnnotationTargets(m, sideEffects, log);
+      orphanInstances(m, sideEffects, log);
       return;
     }
     case "add_edge": {
       requireNode(m, op.from);
       requireNode(m, op.to);
+      checkTransition(m, op.from, op.to);
       const id = op.id ?? allocId(m, "e");
       claimId(m, id, "edge");
       const edge: GraphEdge = { id, from: op.from, to: op.to };
@@ -1285,6 +1358,7 @@ function applyOp(
       const entry: ChangeOp = { op: "update_edge", id: op.id };
       if (op.from !== undefined) next.from = entry.from = requireNode(m, op.from).id;
       if (op.to !== undefined) next.to = entry.to = requireNode(m, op.to).id;
+      checkTransition(m, next.from, next.to);
       if (op.label !== undefined) {
         const label = op.label === null ? "" : checkLabel(op.label);
         if (label) next.label = label;
@@ -1375,6 +1449,56 @@ function applyOp(
       log.push({ op: "remove_annotation", id: op.id });
       return;
     }
+    case "set_instance": {
+      const prev = m.instances.get(op.id);
+      if (!prev) {
+        validateId(op.id, "instance");
+        if (op.state === undefined || op.label === undefined) throw new CanvasError("invalid_patch", `instance ${op.id} does not exist yet; creating it needs label and state`);
+        if (m.instances.size >= LIMITS.instances) throw new CanvasError("too_large", `at most ${LIMITS.instances} instances`);
+      }
+      const next: Instance = prev ? { ...prev } : { id: op.id, label: "", state: "" };
+      const entry: ChangeOp = { op: "set_instance", id: op.id };
+      if (op.label !== undefined) {
+        const label = checkLabel(op.label);
+        if (!label) throw new CanvasError("invalid_label", "an instance needs a label");
+        next.label = entry.label = label;
+      }
+      if (op.state !== undefined) {
+        const target = requireNode(m, op.state);
+        if (target.shape !== "state" && target.shape !== "final") throw new CanvasError("invalid_state", `${op.state} is ${target.shape === "any" ? "the any-state marker" : `a ${target.shape}`}; an instance can only be in a state (or the final state)`);
+        if (prev && prev.state !== op.state) entry.from = prev.state;
+        next.state = entry.state = op.state;
+        delete next.orphaned;
+      }
+      if (op.via !== undefined) {
+        // One transition, or a path through choice points: each starts where the one before ended.
+        const path = (Array.isArray(op.via) ? op.via : [op.via]).map((id) => requireEdge(m, id));
+        path.forEach((edge, i) => {
+          // A transition from "any state" can start wherever the instance is.
+          if (i === 0 && prev && edge.from !== prev.state && edge.from !== ANY_ID) throw new CanvasError("invalid_patch", `transition ${edge.id} does not start at ${prev.state}, where ${op.id} was`);
+          if (i > 0 && edge.from !== path[i - 1].to) throw new CanvasError("invalid_patch", `transition ${edge.id} does not continue from ${path[i - 1].id}`);
+          if (i < path.length - 1 && m.nodes.get(edge.to)?.shape !== "choice") throw new CanvasError("invalid_patch", `a via path only passes through choice points; ${edge.to} is not one`);
+        });
+        if (path.at(-1)!.to !== next.state) throw new CanvasError("invalid_patch", `transition ${path.at(-1)!.id} does not lead to ${next.state}`);
+        entry.via = op.via;
+      }
+      if (op.fields !== undefined) {
+        const fields = Object.fromEntries(Object.entries(op.fields ?? {}).map(([k, v]) => [normalizeLabel(k), normalizeLabel(v)]).filter(([k]) => k));
+        if (Object.keys(fields).length > LIMITS.instanceFields) throw new CanvasError("too_large", `at most ${LIMITS.instanceFields} fields per instance`);
+        if (Object.keys(fields).length) next.fields = fields;
+        else delete next.fields;
+        entry.fields = op.fields === null ? null : fields;
+      }
+      if (!prev) Object.assign(entry, { label: next.label, state: next.state });
+      m.instances.set(op.id, next);
+      log.push(entry);
+      return;
+    }
+    case "remove_instance": {
+      if (!m.instances.delete(op.id)) throw new CanvasError("not_found", `instance ${op.id} does not exist`, { id: op.id });
+      log.push({ op: "remove_instance", id: op.id });
+      return;
+    }
     case "set_direction": {
       m.direction = op.direction;
       log.push({ op: "set_direction", direction: op.direction });
@@ -1450,9 +1574,64 @@ function requireType(m: Model, type: DiagramType, op: string) {
     throw new CanvasError(
       "wrong_diagram_type",
       `${op} needs a ${type} canvas, but this session holds a ${m.type}` +
-        (m.type === "sequence" ? "; use the sequence operations (add_message, add_participant, …)" : "; use the flowchart operations (add_node, add_edge, …)"),
+        (m.type === "sequence"
+          ? "; use the sequence operations (add_message, add_participant, …)"
+          : m.type === "state"
+            ? "; use add_node/add_edge for states and transitions"
+            : "; use the flowchart operations (add_node, add_edge, …)"),
     );
   }
+}
+
+/** Flowcharts take flowchart shapes, state diagrams state shapes. */
+function checkShape(m: Model, shape: GraphNode["shape"]): GraphNode["shape"] {
+  const allowed: readonly string[] = m.type === "state" ? STATE_SHAPES : FLOW_SHAPES;
+  if (!allowed.includes(shape)) throw new CanvasError("invalid_shape", `${shape} is not a ${m.type} shape; use one of ${allowed.join(", ")}`);
+  return shape;
+}
+
+/** Nothing leads into the initial state, and nothing leaves the final one. */
+function checkTransition(m: Model, from: string, to: string) {
+  if (m.type !== "state") return;
+  if (to === INITIAL_ID) throw new CanvasError("invalid_transition", "no transition can lead into the initial state");
+  if (to === ANY_ID) throw new CanvasError("invalid_transition", 'nothing leads into "any state": its transitions are the ones possible from every state');
+  if (from === FINAL_ID) throw new CanvasError("invalid_transition", "no transition can leave the final state");
+}
+
+/** Gives node `node` the id `newId`: transitions, marks and instances that refer to it follow. */
+function renameNode(m: Model, node: GraphNode, newId: string) {
+  if (Object.values(FIXED_STATE_IDS).includes(node.id) && m.type === "state") throw new CanvasError("invalid_id", `${node.id} keeps its id`);
+  const problem = m.type === "state" ? stateIdProblem(newId) : null;
+  if (problem) throw new CanvasError("invalid_id", problem);
+  claimId(m, newId, "node");
+  m.nodes.delete(node.id);
+  for (const e of [...m.edges.values()]) {
+    if (e.from === node.id || e.to === node.id) m.edges.set(e.id, { ...e, ...(e.from === node.id ? { from: newId } : {}), ...(e.to === node.id ? { to: newId } : {}) });
+  }
+  for (const a of [...m.annotations.values()]) {
+    if (a.nodeIds.includes(node.id)) m.annotations.set(a.id, { ...a, nodeIds: a.nodeIds.map((x) => (x === node.id ? newId : x)) });
+  }
+  for (const i of [...m.instances.values()]) if (i.state === node.id) m.instances.set(i.id, { ...i, state: newId });
+}
+
+/** Instances whose state was deleted keep their last state id and are flagged orphaned (shown unplaced). */
+function orphanInstances(m: Model, sideEffects: ChangeOp[], log?: ChangeOp[]) {
+  for (const i of m.instances.values()) {
+    const lost = !m.nodes.has(i.state);
+    if (lost === !!i.orphaned) continue;
+    const next = { ...i };
+    if (lost) next.orphaned = true;
+    else delete next.orphaned;
+    m.instances.set(i.id, next);
+    const fx: ChangeOp = { op: "set_instance", id: i.id, orphaned: lost, reason: lost ? `state ${i.state} was deleted` : `state ${i.state} is back` };
+    sideEffects.push(fx);
+    log?.push(fx);
+  }
+}
+
+function clearInstances(m: Model, sideEffects: ChangeOp[]) {
+  for (const id of m.instances.keys()) sideEffects.push({ op: "remove_instance", id, reason: "not a state diagram any more" });
+  m.instances = new Map();
 }
 
 function requireElement(m: Model, id: string): string {

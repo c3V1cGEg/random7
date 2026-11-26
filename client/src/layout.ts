@@ -20,6 +20,11 @@ export const DEFAULT_SIZE: Record<NodeShape, Size> = {
   decision: { width: 170, height: 100 },
   terminal: { width: 160, height: 44 },
   store: { width: 150, height: 72 },
+  state: { width: 160, height: 52 },
+  initial: { width: 28, height: 28 },
+  final: { width: 34, height: 34 },
+  choice: { width: 44, height: 44 },
+  any: { width: 112, height: 34 },
 };
 
 type SizeOf = (n: GraphNode) => Size;

@@ -2,7 +2,7 @@
 // agent-facing interchange format. Mermaid is NOT the internal model; the store
 // holds a normalized graph and only round-trips through this subset.
 
-import type { ChangeStatus, Direction, Graph, GraphEdge, GraphNode, NodeShape } from "./types.ts";
+import type { ChangeStatus, Direction, FlowShape, Graph, GraphEdge, GraphNode, NodeShape } from "./types.ts";
 import { CHANGE_STATUSES, CanvasError, LIMITS } from "./types.ts";
 
 export const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -67,7 +67,7 @@ function checkStatus(name: string, lineNo: number): ChangeStatus {
 
 // --- serialize ---------------------------------------------------------------
 
-const SHAPE_WRAP: Record<NodeShape, [string, string]> = {
+const SHAPE_WRAP: Record<FlowShape, [string, string]> = {
   action: ['["', '"]'],
   decision: ['{"', '"}'],
   terminal: ['(["', '"])'],
@@ -77,7 +77,7 @@ const SHAPE_WRAP: Record<NodeShape, [string, string]> = {
 export function toMermaid(graph: Graph): string {
   const lines = [`flowchart ${graph.direction}`];
   for (const n of graph.nodes) {
-    const [open, close] = SHAPE_WRAP[n.shape];
+    const [open, close] = SHAPE_WRAP[n.shape as FlowShape] ?? SHAPE_WRAP.action;
     lines.push(`    ${n.id}${open}${encodeLabel(n.label)}${close}${n.status ? `:::${n.status}` : ""}`);
   }
   for (const e of graph.edges) {

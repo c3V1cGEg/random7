@@ -1,7 +1,22 @@
 export type Direction = "TD" | "LR";
-export type NodeShape = "action" | "decision" | "terminal" | "store";
+export type FlowShape = "action" | "decision" | "terminal" | "store";
+/**
+ * State-diagram shapes: a state, the initial/final pseudo-states ([*]), a choice point, and "any":
+ * the one source of transitions that are possible from every state (cancel, delete, …).
+ */
+export type StateShape = "state" | "initial" | "final" | "choice" | "any";
+export type NodeShape = FlowShape | StateShape;
 
-export const NODE_SHAPES: readonly NodeShape[] = ["action", "decision", "terminal", "store"];
+export const FLOW_SHAPES: readonly FlowShape[] = ["action", "decision", "terminal", "store"];
+export const STATE_SHAPES: readonly StateShape[] = ["state", "initial", "final", "choice", "any"];
+export const NODE_SHAPES: readonly NodeShape[] = [...FLOW_SHAPES, ...STATE_SHAPES];
+/** Fixed ids of the state diagram's pseudo-states (Mermaid writes both as [*]). */
+export const INITIAL_ID = "initial";
+export const FINAL_ID = "final";
+/** Fixed id of the "any state" source; Mermaid writes it as an ordinary state named "Any state". */
+export const ANY_ID = "any";
+/** Shapes with a fixed id and label: there is at most one of each. */
+export const FIXED_STATE_IDS: Partial<Record<StateShape, string>> = { initial: INITIAL_ID, final: FINAL_ID, any: ANY_ID };
 export const ANNOTATION_KINDS = [
   "question",
   "needs-testing",
@@ -29,6 +44,8 @@ export const LIMITS = {
   opsPerPatch: 100,
   mermaidLength: 50_000,
   historyEvents: 200,
+  instances: 100,
+  instanceFields: 12,
 } as const;
 
 export interface GraphNode {
@@ -52,8 +69,22 @@ export interface Graph {
   edges: GraphEdge[];
 }
 
-export const DIAGRAM_TYPES = ["flowchart", "sequence"] as const;
+export const DIAGRAM_TYPES = ["flowchart", "sequence", "state"] as const;
 export type DiagramType = (typeof DIAGRAM_TYPES)[number];
+/** Diagram types drawn as nodes and edges (the flowchart model). */
+export const isGraphType = (t: DiagramType): boolean => t === "flowchart" || t === "state";
+
+/** A runtime object of a state diagram (e.g. "Order #1042") and the state it is in. Not part of the Mermaid text. */
+export interface Instance {
+  id: string;
+  label: string;
+  /** Id of the state node it is in. */
+  state: string;
+  /** Field values shown on hover, e.g. { total: "€120" }. */
+  fields?: Record<string, string>;
+  /** True when its state was deleted; it keeps the last state id. */
+  orphaned?: boolean;
+}
 
 export interface Annotation {
   /** Session-local, monotonically increasing, never reused. */

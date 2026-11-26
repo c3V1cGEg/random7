@@ -72,7 +72,7 @@ export function SessionTabs({
   const [menu, setMenu] = useState<{ name: string; x: number; y: number } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [name, setName] = useState("");
-  const [type, setType] = useState<"flowchart" | "sequence">("flowchart");
+  const [type, setType] = useState<"flowchart" | "sequence" | "state">("flowchart");
   const menuRef = useRef<HTMLDivElement>(null);
   const newRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -231,7 +231,7 @@ export function SessionTabs({
           const side = split && current ? (s.name === shown[0] ? "left" : "right") : null;
           const info =
             s.updatedAt &&
-            `${s.type === "sequence" ? "Sequence diagram" : "Flowchart"} · ${s.nodes} ${s.type === "sequence" ? "elements" : "nodes"} · ${s.marks} marks · updated ${ago(s.updatedAt)}`;
+            `${s.type === "sequence" ? "Sequence diagram" : s.type === "state" ? "State diagram" : "Flowchart"} · ${s.nodes} ${s.type === "sequence" ? "elements" : s.type === "state" ? "states" : "nodes"} · ${s.marks} marks · updated ${ago(s.updatedAt)}`;
           return (
             <a
               key={s.name}
@@ -249,7 +249,7 @@ export function SessionTabs({
                 setMenu({ name: s.name, x: e.clientX, y: e.clientY });
               }}
             >
-              <span className="session-type">{s.type === "sequence" ? "⇄" : "▭"}</span>
+              <span className="session-type">{s.type === "sequence" ? "⇄" : s.type === "state" ? "◉" : "▭"}</span>
               <span className="session-name">{s.name}</span>
               {s.marks > 0 && <span className="session-marks">{s.marks}</span>}
               {side && <span className="session-side" title={`Shown on the ${side}`}>{side === "left" ? "◧" : "◨"}</span>}
@@ -303,6 +303,7 @@ export function SessionTabs({
             <select value={type} onChange={(e) => setType(e.target.value as typeof type)} title="Diagram type">
               <option value="flowchart">Flowchart</option>
               <option value="sequence">Sequence</option>
+              <option value="state">State</option>
             </select>
             <button className="primary" type="submit" disabled={!name.trim()}>
               Create

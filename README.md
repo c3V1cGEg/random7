@@ -8,7 +8,8 @@ A shared, live flowchart canvas. You edit it in the browser; an MCP coding agent
 same canvas through MCP tools. One local Node.js process serves both. The plans in `plans/` are
 numbered in the order they were built: [001 prototype spec](plans/001_visual_agent_canvas_mcp_prototype_spec.md),
 [002 sequence diagrams](plans/002_sequence_diagram_canvas_extension_requirements.md),
-[003 skill tool](plans/003_visual_canvas_mcp_skill_extension.md).
+[003 skill tool](plans/003_visual_canvas_mcp_skill_extension.md),
+[006 state diagrams](plans/006_state_diagram_poc.md).
 
 ## Run
 
@@ -225,6 +226,40 @@ let the agent send a `sequenceDiagram` to `canvas_replace_diagram`.
   New items take a `position`: `{after}`, `{before}`, `{in: fragment, section}` or `{index}`.
 - Undo restores a sequence as a whole. If the agent changed the sequence after your step, the undo is
   refused rather than overwriting the agent's work.
+
+## State diagrams (lifecycles and instances), POC
+
+A session can also be a **state diagram**: the lifecycle of one business object (order, ticket,
+invoice). Create one with **+ New session → State** or `canvas_create_session {type: "state"}`, or let
+the agent send a `stateDiagram-v2` to `canvas_replace_diagram`.
+
+- **Interchange** is a Mermaid `stateDiagram-v2` subset: `state "Label" as Id`, `Id : detail line`,
+  `state Id <<choice>>`, `A --> B : event [guard] / action`, `[*]` for start and end, `direction LR`,
+  and `class Id new|changed|removed`. Transition ids sit on `%%@e3` lines, as in sequence diagrams.
+  Composite states, `--` regions, fork/join, history states and notes are rejected with a line-numbered error.
+- **Model**: states are nodes and transitions are edges, so everything from flowcharts applies:
+  `add_node` (shapes `state`, `choice`, `initial`, `final`), `add_edge`, marks, statuses, undo,
+  revisions, Tidy. The start and end have the fixed ids `initial` and `final`.
+- **Instances**: runtime objects shown as chips on their current state. Hovering a chip shows its fields.
+  Agents use `set_instance {id, label, state, fields?, via?}` and `remove_instance {id}`. `via` names
+  the transition taken, or the list of transitions through choice points (`["e3","e4"]`), and the
+  editor highlights it. Instances are not part of the Mermaid text. The snapshot lists them under
+  `instances`. If an instance's state is deleted, it waits in a *Not in any state* tray.
+- **Meant as an overview**: the status of one thing at business level, one state per possible value
+  (usually an enum in the code), transitions as business events. Keep it to about 3–10 states.
+- **Left to right** by default (`direction TB` or the toolbar's direction button for top-down).
+- **Any state** (`A`, Mermaid `state "Any state" as any`): draw things possible from every state
+  (cancel, delete) once, from this marker. They are dashed, and the legend lists them.
+- **Values**: a state's id is its value. Naming a hand-drawn state sets its value (*In progress* →
+  `InProgress`). Agents rename with `update_node {id, newId}`.
+- **States legend** (top left): every state in lifecycle order from the start. Each row shows the
+  value when it differs from the label, *start* / *end* / *unreachable* / *dead end* tags, and the
+  number of instances in that state. Transitions from *Any state* are listed below the states. Click
+  a row to select the state; ▾ collapses the legend.
+- **Editing**: `N` adds a state, `D` a choice, `T` the start and then the end. Tab continues with a
+  connected state.
+- **Visio export** (tab menu → *Save as Visio*) keeps the state shapes, the instance chips and the
+  States legend. Enum values, instance fields and their states are exported as Shape Data.
 
 ## Proposing changes
 

@@ -240,7 +240,7 @@ app.post("/api/sessions", (req, res) => {
     const store = sessions.create(
       String(req.body?.name ?? ""),
       typeof req.body?.title === "string" ? req.body.title : undefined,
-      req.body?.type === "sequence" ? "sequence" : "flowchart",
+      req.body?.type === "sequence" || req.body?.type === "state" ? req.body.type : "flowchart",
     );
     res.json(store.summary());
   } catch (err) {

@@ -242,6 +242,8 @@ const FIELD_LABEL: Record<string, string> = {
   targets: "targets",
   replies: "replies",
   orphaned: "targets deleted",
+  state: "moved",
+  fields: "fields",
 };
 const TYPE_ICON: Record<ElementChange["type"], string> = {
   node: "▭",
@@ -251,6 +253,7 @@ const TYPE_ICON: Record<ElementChange["type"], string> = {
   note: "✎",
   activation: "▮",
   fragment: "⧉",
+  instance: "●",
 };
 
 /** Long runs of unchanged lines fold to "… N unchanged lines", keeping two lines of context. */
@@ -304,7 +307,7 @@ export function ComparePanel({
               {CHANGE_LABEL[change]} <span className="count">{items.length}</span>
             </div>
             {items.map((c) => (
-              <button key={c.id} className={`compare-row ${change}`} onClick={() => onReveal({ element: c.id })} title={`Show ${c.id}`}>
+              <button key={c.id} className={`compare-row ${change}`} onClick={() => onReveal({ element: c.target ?? c.id })} title={`Show ${c.target ?? c.id}`}>
                 <span className="compare-icon">{TYPE_ICON[c.type]}</span>
                 <span className="compare-name">
                   {c.name}
@@ -338,7 +341,7 @@ export function ComparePanel({
           ))}
         </div>
       )}
-      {diff.type === "flowchart" && (
+      {diff.type !== "sequence" && (
         <label className="compare-moves" title="Moves and resizes don't change the diagram's meaning; they are left out unless shown here">
           <input type="checkbox" checked={showMoves} onChange={(e) => onShowMoves(e.target.checked)} disabled={!layoutCount} />
           Show layout changes

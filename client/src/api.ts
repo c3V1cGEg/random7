@@ -66,7 +66,7 @@ export const resetSession = (name: string) => post(`/api/s/${encodeURIComponent(
 export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}, record?: string) =>
   post(`${base}/layout`, forked({ positions, anchors, client: CLIENT_ID, ...(record ? { record } : {}) }));
 
-export const createSession = (name: string, type: "flowchart" | "sequence" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
+export const createSession = (name: string, type: "flowchart" | "sequence" | "state" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
 
 /** Download URL of a session's export file (the same JSON the server keeps on disk). */
 export const exportUrl = (name: string) => `/api/s/${encodeURIComponent(name)}/export`;
@@ -153,6 +153,7 @@ export function opTarget(op: { op: string } & Record<string, unknown>): OpTarget
   if (/^(add|update)_(node|edge|participant|message|note|activation|fragment)$/.test(op.op) || op.op === "move_item") {
     return { element: op.id as string };
   }
+  if ((op.op === "set_instance" || op.op === "add_instance" || op.op === "update_instance") && typeof op.state === "string") return { element: op.state };
   return undefined;
 }
 
@@ -174,7 +175,7 @@ export function describeOp(op: { op: string } & Record<string, unknown>): string
     case "add_node":
       return `added ${op.id} ${q(op.label)}${st(op.status)}`;
     case "update_node":
-      return `changed ${op.id}${op.label !== undefined ? ` → ${q(op.label)}` : ""}${op.shape ? ` (${op.shape})` : ""}${st(op.status)}`;
+      return `changed ${op.id}${op.label !== undefined ? ` → ${q(op.label)}` : ""}${op.newId ? `, value now ${op.newId}` : ""}${op.shape ? ` (${op.shape})` : ""}${st(op.status)}`;
     case "remove_node":
       return `removed ${op.id}`;
     case "add_edge":
@@ -194,9 +195,20 @@ export function describeOp(op: { op: string } & Record<string, unknown>): string
     case "replace_diagram":
       return op.type === "sequence"
         ? `drew sequence diagram (${op.participants} participants, ${op.items} items)`
-        : `drew diagram (${op.nodes} nodes, ${op.edges} edges)`;
+        : op.type === "state"
+          ? `drew state diagram (${op.nodes} states, ${op.edges} transitions)`
+          : `drew diagram (${op.nodes} nodes, ${op.edges} edges)`;
     case "set_diagram_type":
-      return `switched to a ${op.type === "sequence" ? "sequence diagram" : "flowchart"}`;
+      return `switched to a ${op.type === "sequence" ? "sequence diagram" : op.type === "state" ? "state diagram" : "flowchart"}`;
+    case "set_instance":
+    case "add_instance":
+    case "update_instance":
+      if (op.reason) return `${op.id} ${op.orphaned ? "lost its state" : "is back in its state"}`;
+      if (op.from && op.state) return `moved ${op.id} ${op.from} → ${op.state}${op.via ? ` (${[op.via].flat().join(" → ")})` : ""}`;
+      if (op.op !== "update_instance" && op.label) return `placed ${q(op.label)} in ${op.state}`;
+      return `changed ${op.id}${op.state ? ` (in ${op.state})` : ""}${op.fields !== undefined ? " fields" : ""}`;
+    case "remove_instance":
+      return `removed ${op.id}`;
     case "add_participant":
       return `added lane ${op.id} ${q(op.label)}${st(op.status)}`;
     case "update_participant":

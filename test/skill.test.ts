@@ -40,7 +40,7 @@ test("every Mermaid example in the skill is accepted by this server", () => {
   for (const src of blocks) {
     const store = new CanvasStore();
     store.replaceDiagram(0, src, "clear", "agent");
-    assert.equal(store.snapshot().type, src.startsWith("sequenceDiagram") ? "sequence" : "flowchart");
+    assert.equal(store.snapshot().type, src.startsWith("sequenceDiagram") ? "sequence" : src.startsWith("stateDiagram") ? "state" : "flowchart");
   }
   // Inline snippets from the conventions table and the syntax lists parse too.
   const flow = new CanvasStore();

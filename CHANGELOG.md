@@ -3,6 +3,72 @@
 Newest first. Changes you can see in the editor come with a screenshot; the images live in
 [`docs/changelog/`](docs/changelog/).
 
+## 2026-11-26
+
+### State diagrams (POC)
+
+A third session type, **State**, draws the lifecycle of a business object. States, transitions,
+choice points and the start and end dots (`[*]`) use the flowchart's editing, marks, proposal colours,
+undo, revisions and layout. The agent sends Mermaid `stateDiagram-v2`. **Instances** (e.g. *Order
+#1042*) appear as chips on the state they are in, and their fields show on hover. See
+[plan 006](plans/006_state_diagram_poc.md).
+
+A **States** legend in the top-left corner lists every state the object can be in — its enum values.
+They appear in lifecycle order, following the transitions from the start through choice points. Each
+row shows:
+- the value, when it differs from the label (*Payment failed* `Failed`);
+- *start* and *end* tags for states entered from the start or leading to the end, directly or through
+  a choice;
+- *unreachable* for states no path from the start reaches (listed last), and *dead end* for a state
+  you can never leave that isn't the end;
+- how many instances are in that state.
+
+The legend also warns about a choice with no way out. Clicking a row selects that state, and the ▾
+toggle collapses the legend (this browser remembers the choice). When the view is fitted, the diagram
+is placed to the right of the legends instead of under them.
+
+![Order lifecycle: Order #1042 in Draft, #1043 in Payment failed with its fields open, #1041 in Shipped; the States legend lists Draft (start), Submitted, Paid, Payment failed (Failed), Shipped (end) and Cancelled (end) with their instance counts](docs/changelog/state-diagram-instances.png)
+
+When the agent moves an instance, the transitions it took light up, and Activity says where it went.
+Comparing two revisions lists instances that moved too (*Order #1 (Draft → Submitted)*).
+
+![The agent moved Order #1042 from Draft to Submitted, then through the choice to Paid; the path is highlighted and listed in Activity](docs/changelog/state-diagram-instance-move.png)
+
+State diagrams are meant as a **business-level overview** of how the status of one thing behaves,
+not as a map of every code path:
+- **✱ Any state** (`A`): things possible from every state, such as cancel or delete, are drawn once, as
+  a dashed transition from a single "Any state" marker. They don't need an arrow from each state, and
+  the legend lists them under *From any state*.
+- **Values like an enum:** a state's id is its value. When you name a state you drew, its value
+  follows the name (*In progress* → `InProgress`) instead of staying `n2`. A name that is a Mermaid
+  keyword gets a suffix (*End* → `EndState`). Agents rename values with `update_node {newId}`, and
+  transitions, marks and instances follow.
+- **Left to right:** state diagrams run left to right, like a timeline. That applies to new State
+  sessions, to an empty canvas switched to State, and to agent Mermaid without a `direction` line.
+  `direction TB` or the toolbar's direction button still switch to top-down.
+- The agent's guide asks for business words ("customer pays", not function names), about 3–10
+  states, one state per enum value, and side flags (e.g. *orphaned*) as fields rather than extra states.
+
+![How a mark behaves, at business level: deletion drawn once from Any state and listed in the legend, enum values next to the names, both states after the author choice tagged start, orphaned shown as a field of #2](docs/changelog/state-diagram-any-state.png)
+
+**Save as Visio** draws state diagrams as they look on the canvas:
+- States have rounded corners.
+- The start and end are a filled dot and a ringed dot, with no text.
+- A choice is a diamond with its id written under it.
+- Transitions from *Any state* are dashed.
+- Instances are purple chips under their state, and occupied states have the purple outline.
+- The States legend is a box to the left of the diagram, with the same tags, *From any state* list and
+  choice warnings as on the canvas.
+
+Each state carries its enum value and instance count as Visio **Shape Data**. Each instance carries
+its id, state and fields the same way, so the data is still there in Visio, Lucidchart or draw.io.
+
+### Fixed: Visio note position on curved lines
+
+The note for a mark on a curved transition now sits halfway along the drawn line, where its chip is on
+the canvas. It used to sit halfway between the line's ends, which for a looping edge is in the middle
+of the diagram.
+
 ## 2026-11-25
 
 ### A new mark opens in the Current tab

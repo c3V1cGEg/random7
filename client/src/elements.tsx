@@ -31,12 +31,21 @@ export interface CanvasNodeData extends Record<string, unknown> {
   minHeight?: number;
   /** Moved or resized between two compared revisions. */
   moved?: boolean;
+  /** State diagrams: runtime instances currently in this state. */
+  instances?: InstanceChip[];
+}
+export interface InstanceChip {
+  id: string;
+  label: string;
+  fields?: Record<string, string>;
 }
 export interface CanvasEdgeData extends Record<string, unknown> {
   label?: string;
   marks: number[];
   status?: ChangeStatus;
   direction: Direction;
+  /** State diagrams: a transition possible from every state (drawn dashed). */
+  fromAny?: boolean;
   /** Where each end attaches to its node. */
   from: EndAnchor;
   to: EndAnchor;
@@ -48,10 +57,11 @@ export interface CanvasActions {
   /** Node or edge whose label is being edited inline (ids share one namespace). */
   editingId: string | null;
   setEditingId(id: string | null): void;
-  renameNode(id: string, label: string): void;
+  /** Returns the node's id afterwards (a state's id can follow its new name). */
+  renameNode(id: string, label: string): string;
   relabelEdge(id: string, label: string): void;
-  /** Creates a connected next step after `id` and starts editing it. */
-  addNext(id: string): void;
+  /** Creates a connected next step after `id` (placed by `id`'s node, linked from `linkId`, default `id`) and starts editing it. */
+  addNext(id: string, linkId?: string): void;
   focusMark(id: number): void;
   /** Hovering a #N reference opens that mark's note, as hovering the mark itself does (null: hover ended). */
   hoverMark(id: number | null): void;
@@ -79,7 +89,7 @@ export interface TypeAhead {
 export const ActionsContext = createContext<CanvasActions>({
   editingId: null,
   setEditingId() {},
-  renameNode() {},
+  renameNode: (id) => id,
   relabelEdge() {},
   addNext() {},
   focusMark() {},
@@ -245,7 +255,7 @@ function NodeLabel({ id, label }: { id: string; label: string }) {
   if (editingId !== id) return <LabelText label={label} />;
   const save = (v: string | null) => {
     const next = v?.trim();
-    if (next) renameNode(id, next);
+    return next ? renameNode(id, next) : id;
   };
   return (
     <LabelEditor
@@ -256,12 +266,74 @@ function NodeLabel({ id, label }: { id: string; label: string }) {
         save(v);
       }}
       onTab={(v) => {
-        save(v);
-        addNext(id);
+        addNext(id, save(v));
       }}
     />
   );
 }
+
+/** "Order #1042" chips under the state an instance is in; fields show on hover. */
+export function InstanceChips({ instances }: { instances: InstanceChip[] }) {
+  const { touched } = useContext(ActionsContext);
+  if (!instances.length) return null;
+  return (
+    <div className="instances">
+      {instances.map((i) => (
+        <span key={i.id} data-instance={i.id} className={`instance${touched.has(`inst:${i.id}`) ? " touched" : ""}`}>
+          <span className="instance-dot" aria-hidden />
+          {i.label}
+          {i.fields && <span className="instance-more">ⓘ</span>}
+          <span className="instance-card" role="tooltip">
+            <b>{i.label}</b>
+            <span className="muted">{i.id}</span>
+            {i.fields && (
+              <dl>
+                {Object.entries(i.fields).map(([k, v]) => (
+                  <div key={k}>
+                    <dt>{k}</dt>
+                    <dd>{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Initial and final pseudo-states ([*]) and choice points: fixed-size marks without a label to edit. */
+const PseudoState = memo(function PseudoState({ id, data, selected }: NodeProps<CanvasNode>) {
+  const { touched } = useContext(ActionsContext);
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => updateNodeInternals(id), [data.direction, id, updateNodeInternals]);
+  return (
+    <div
+      className={`node node-${data.shape}${data.status ? ` status-${data.status}` : ""}${data.moved ? " diff-moved" : ""}${selected ? " selected" : ""}${touched.has(id) ? " touched" : ""}${data.instances?.length ? " occupied" : ""}`}
+      title={
+        data.shape === "choice"
+          ? `Choice: ${id}`
+          : data.shape === "initial"
+            ? "Initial state"
+            : data.shape === "any"
+              ? "Any state: its transitions are possible from every state"
+              : "Final state"
+      }
+    >
+      {data.shape === "any" && <span className="any-label">✱ Any state</span>}
+      {data.shape === "choice" && (
+        <svg className="diamond" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
+          <polygon points="50,2 98,50 50,98 2,50" />
+        </svg>
+      )}
+      {handles(data.direction)}
+      {data.shape === "choice" && <span className="choice-id">{id}</span>}
+      <MarkBadges marks={data.marks} />
+      {data.instances && <InstanceChips instances={data.instances} />}
+    </div>
+  );
+});
 
 export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
   const { setEditingId, touched, editingId, resizeNode } = useContext(ActionsContext);
@@ -311,7 +383,7 @@ export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected 
     <div
       ref={ref}
       style={style}
-      className={`node node-${data.shape}${data.status ? ` status-${data.status}` : ""}${data.label.includes("\n") ? " has-details" : ""}${data.moved ? " diff-moved" : ""}${selected ? " selected" : ""}${touched.has(id) ? " touched" : ""}`}
+      className={`node node-${data.shape}${data.status ? ` status-${data.status}` : ""}${data.label.includes("\n") ? " has-details" : ""}${data.moved ? " diff-moved" : ""}${selected ? " selected" : ""}${touched.has(id) ? " touched" : ""}${data.instances?.length ? " occupied" : ""}`}
       onDoubleClick={(e) => {
         e.stopPropagation();
         setEditingId(id);
@@ -329,16 +401,27 @@ export const CanvasNodeView = memo(function CanvasNodeView({ id, data, selected 
         </svg>
       )}
       {handles(data.direction)}
-      <span className="node-id">{id}</span>
+      {!(data.shape === "state" && data.label.split("\n")[0] === id) && <span className="node-id">{id}</span>}
       {data.status && <span className={`status-tag status-${data.status}`}>{STATUS_META[data.status].label}</span>}
       <MarkBadges marks={data.marks} />
       <NodeLabel id={id} label={data.label} />
+      {data.instances && <InstanceChips instances={data.instances} />}
     </div>
     </>
   );
 });
 
-export const nodeTypes = { action: CanvasNodeView, terminal: CanvasNodeView, decision: CanvasNodeView, store: CanvasNodeView };
+export const nodeTypes = {
+  action: CanvasNodeView,
+  terminal: CanvasNodeView,
+  decision: CanvasNodeView,
+  store: CanvasNodeView,
+  state: CanvasNodeView,
+  initial: PseudoState,
+  final: PseudoState,
+  choice: PseudoState,
+  any: PseudoState,
+};
 
 const isBackEdge = (sx: number, sy: number, tx: number, ty: number, sp: Position) =>
   (sp === Position.Bottom && ty < sy - 100) || (sp === Position.Right && tx < sx - 100);
@@ -478,6 +561,7 @@ export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<Canv
     marks.length && "edge-marked",
     selected && "edge-selected",
     touched.has(id) && "edge-touched",
+    data?.fromAny && "edge-any",
   ]
     .filter(Boolean)
     .join(" ");

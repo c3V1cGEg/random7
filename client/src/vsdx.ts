@@ -41,8 +41,27 @@ export interface ExportMark {
   box: Box;
   outline?: boolean;
 }
+/** State diagrams: an instance chip where the canvas shows it. */
+export interface ExportInstance extends Box {
+  id: string;
+  label: string;
+  state: string;
+  fields?: Record<string, string>;
+}
+/** State diagrams: one row of the States legend. */
+export interface ExportLegendRow {
+  id: string;
+  label: string;
+  count: number;
+  tags: string[];
+}
 export interface ExportDiagram {
   title: string;
+  /** State diagrams: instance chips, and the States legend (drawn left of the diagram). */
+  instances?: ExportInstance[];
+  legend?: ExportLegendRow[];
+  /** Lines under the legend's states, as on the canvas: transitions from any state, warnings. */
+  legendNotes?: string[];
   nodes: ExportNode[];
   edges: ExportEdge[];
   marks: ExportMark[];
@@ -98,7 +117,17 @@ const MARGIN = 48;
 const INK = "#1f2328";
 const BORDER = "#3b3f46";
 const EDGE = "#4a4f57";
-const FILL: Record<GraphNode["shape"], string> = { action: "#ffffff", terminal: "#f1f4f8", decision: "#fffaf0", store: "#f4f7fb" };
+const FILL: Record<GraphNode["shape"], string> = {
+  action: "#ffffff",
+  terminal: "#f1f4f8",
+  decision: "#fffaf0",
+  store: "#f4f7fb",
+  state: "#ffffff",
+  initial: "#1f2937",
+  final: "#1f2937",
+  choice: "#fffaf0",
+  any: "#f6f8fa",
+};
 const STATUS: Record<ChangeStatus, { line: string; fill: string }> = {
   new: { line: "#16a34a", fill: "#dcfce7" },
   changed: { line: "#d97706", fill: "#fef3c7" },
@@ -115,6 +144,9 @@ const KIND_COLOR: Record<keyof typeof KIND_META, string> = {
   uncertain: "#7d8590",
   custom: "#1a9aa0",
 };
+const INSTANCE = { line: "#7c4dff", fill: "#f1ebff", ink: "#3b1f8f" };
+const LEGEND_WIDTH = 250;
+const LEGEND_FONT = 12;
 const NOTE_WIDTH = 260;
 const NOTE_FONT = 12;
 
@@ -128,6 +160,19 @@ const row = (type: string, ix: number, cells: Record<string, number>) =>
 const geometry = (ix: number, rows: string[], { noFill = false } = {}) =>
   `<Section N="Geometry" IX="${ix}">${cell("NoFill", noFill ? 1 : 0)}${cell("NoLine", 0)}${cell("NoShow", 0)}${rows.join("")}</Section>`;
 const font = (px: number) => cell("Size", px / PX, "PT");
+
+/** Visio Shape Data: shown in Visio's Shape Data window and imported as data by Lucidchart and draw.io. */
+const shapeData = (fields: Array<[string, string]>) =>
+  fields.length
+    ? `<Section N="Property">${fields
+        .map(
+          ([label, value], i) =>
+            `<Row N="${label.replace(/[^A-Za-z0-9_]/g, "_").replace(/^(?![A-Za-z])/, "f") || `f${i}`}">` +
+            cell("Value", value, "STR") + cell("Label", label) + cell("Type", 0) + cell("Invisible", 0) +
+            `</Row>`,
+        )
+        .join("")}</Section>`
+    : "";
 
 /** Character rows: 0 normal, 1 bold, plus strike-through for removed elements. */
 function characters(color: string, px: number, strike = false) {
@@ -156,8 +201,12 @@ const wrappedLines = (s: string, width: number, px: number) =>
 export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
   const d = diagram.lines === "straight" ? { ...diagram, edges: diagram.edges.map((e) => facing(e, diagram.nodes)) } : diagram;
   const notes = d.marks.map((m) => ({ ...m, ...markNote(m) }));
+  const instances = d.instances ?? [];
+  const drawn: Box[] = [...d.nodes, ...instances];
+  const legend = d.legend?.length ? legendBox(d.legend, d.legendNotes ?? [], drawn) : undefined;
   const all: Box[] = [
-    ...d.nodes,
+    ...drawn,
+    ...(legend ? [legend.box] : []),
     ...d.edges.flatMap((e) => edgePoints(e, d.lines).map((p) => ({ ...p, width: 0, height: 0 }))),
     ...notes.flatMap((n) => (n.outline === false ? [n.note] : [n.box, n.note])),
   ];
@@ -202,28 +251,51 @@ export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
     };
   });
 
+  const occupied = new Set(instances.map((i) => i.state));
   for (const { id, node, points } of nodeShape.values()) {
     const w = node.width / PX;
     const h = node.height / PX;
     const status = node.status && STATUS[node.status];
-    const lines = labelLines(node.label);
+    const pseudo = node.shape === "initial" || node.shape === "final" || node.shape === "choice";
+    const lines = pseudo ? [] : labelLines(node.label);
     const detailed = lines.length > 1;
+    // An occupied state gets the canvas's purple outline (unless a proposal colour already marks it).
+    const line = status?.line ?? (occupied.has(node.id) && !pseudo ? INSTANCE.line : BORDER);
+    const weight = status ? 2.2 : occupied.has(node.id) && !pseudo ? 2.4 : 1.6;
     shapes.push(
       `<Shape ID="${id}" NameU="${esc(node.id)}" Name="${esc(node.id)}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">` +
         xform(X(node.x), Y(node.y + node.height), w, h) +
-        cell("FillForegnd", status?.fill ?? FILL[node.shape]) + cell("FillPattern", 1) +
-        cell("LineColor", status?.line ?? BORDER) + cell("LineWeight", (status ? 2.2 : 1.6) / PX) +
-        cell("LinePattern", node.status === "removed" ? 2 : 1) +
-        cell("Rounding", node.shape === "action" ? 8 / PX : node.shape === "terminal" ? h / 2 : 0) +
+        cell("FillForegnd", node.shape === "final" ? "#ffffff" : (status?.fill ?? FILL[node.shape])) + cell("FillPattern", 1) +
+        cell("LineColor", line) + cell("LineWeight", (node.shape === "final" ? 2 : weight) / PX) +
+        cell("LinePattern", node.status === "removed" || node.shape === "any" ? 2 : 1) +
+        cell("Rounding", node.shape === "action" ? 8 / PX : node.shape === "terminal" || node.shape === "any" ? h / 2 : node.shape === "state" ? 16 / PX : 0) +
         textMargins(node.shape, w, h) +
+        // A choice is named by its id, written under the diamond as on the canvas.
+        (node.shape === "choice"
+          ? cell("TxtPinX", w / 2) + cell("TxtPinY", -8 / PX) + cell("TxtWidth", Math.max(w, (node.id.length * 7 + 8) / PX)) +
+            cell("TxtHeight", 14 / PX) + cell("TxtLocPinX", Math.max(w, (node.id.length * 7 + 8) / PX) / 2) + cell("TxtLocPinY", 7 / PX)
+          : "") +
         cell("VerticalAlign", detailed && node.shape !== "decision" ? 0 : 1) +
-        characters(node.status === "removed" ? "#7f1d1d" : INK, 13, node.status === "removed") +
+        characters(node.shape === "choice" ? "#6b7280" : node.status === "removed" ? "#7f1d1d" : INK, node.shape === "choice" ? 10.5 : 13, node.status === "removed") +
         paragraph(detailed && node.shape !== "decision" ? "left" : "center") +
         `<Section N="Connection">${points.map((p, ix) => row("Connection", ix, { X: (p.x - node.x) / PX, Y: (node.y + node.height - p.y) / PX })).join("")}</Section>` +
+        (node.shape === "state" ? shapeData([["Value", node.id], ["Instances", String(instances.filter((i) => i.state === node.id).length)]]) : "") +
         outline(node.shape, w, h) +
-        text(lines, detailed) +
+        (node.shape === "choice" ? text([node.id], false) : node.shape === "any" ? text(["✱ Any state"], false) : pseudo ? "" : text(lines, detailed)) +
         `</Shape>`,
     );
+    if (node.shape === "final") {
+      const inset = Math.min(node.width, node.height) * 0.2;
+      const dw = (node.width - 2 * inset) / PX;
+      const dh = (node.height - 2 * inset) / PX;
+      shapes.push(
+        `<Shape ID="${nextId++}" NameU="${esc(node.id)} dot" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">` +
+          xform(X(node.x + inset), Y(node.y + node.height - inset), dw, dh) +
+          cell("FillForegnd", FILL.final) + cell("FillPattern", 1) + cell("LinePattern", 0) +
+          geometry(0, [ellipse(0, 0, dw, dh)]) +
+          `</Shape>`,
+      );
+    }
     if (node.status) shapes.push(statusTag(nextId++, node, node.status, X, Y));
   }
 
@@ -237,7 +309,8 @@ export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
       cell("BeginX", X(e.start.x)) + cell("BeginY", Y(e.start.y)) + cell("EndX", X(e.end.x)) + cell("EndY", Y(e.end.y)) +
       cell("ObjType", 2) +
       cell("LineColor", status?.line ?? EDGE) + cell("LineWeight", (status ? 2.4 : 1.6) / PX) +
-      cell("LinePattern", e.status === "removed" ? 2 : 1) + cell("EndArrow", 13) + cell("EndArrowSize", 2);
+      // Removed transitions, and those possible from every state ("any state"), are dashed as on the canvas.
+      cell("LinePattern", e.status === "removed" || e.from === "any" ? 2 : 1) + cell("EndArrow", 13) + cell("EndArrowSize", 2);
     // The label: a box sized to its text, centred at (x, y) in the connector's own frame, turned by `angle` to read horizontally.
     const labelAt = (x: number, y: number, angle: number) =>
       label
@@ -288,6 +361,40 @@ export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
     if (to) connects.push(glue(id, "EndX", 12, to.shape.id, to.ix));
   });
 
+  // Instance chips: pills where the canvas shows them, their fields as Shape Data.
+  for (const inst of instances) {
+    const w = inst.width / PX;
+    const h = inst.height / PX;
+    shapes.push(
+      `<Shape ID="${nextId++}" NameU="${esc(inst.id)}" Name="${esc(inst.label)}" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">` +
+        xform(X(inst.x), Y(inst.y + inst.height), w, h) +
+        cell("FillForegnd", INSTANCE.fill) + cell("FillPattern", 1) + cell("LineColor", INSTANCE.line) + cell("LineWeight", 1 / PX) +
+        cell("Rounding", h / 2) + cell("LeftMargin", 6 / PX) + cell("RightMargin", 6 / PX) + cell("TopMargin", 0) + cell("BottomMargin", 0) +
+        characters(INSTANCE.ink, 11.5) +
+        paragraph("center") +
+        shapeData([["Id", inst.id], ["State", inst.state], ...Object.entries(inst.fields ?? {})]) +
+        geometry(0, rect(w, h)) +
+        text([`● ${inst.label}`], true) +
+        `</Shape>`,
+    );
+  }
+
+  if (legend) {
+    const { box, lines } = legend;
+    shapes.push(
+      `<Shape ID="${nextId++}" NameU="States legend" Name="States" Type="Shape" LineStyle="0" FillStyle="0" TextStyle="0">` +
+        xform(X(box.x), Y(box.y + box.height), box.width / PX, box.height / PX) +
+        cell("FillForegnd", "#ffffff") + cell("FillPattern", 1) + cell("LineColor", "#d0d7de") + cell("LineWeight", 1 / PX) + cell("Rounding", 8 / PX) +
+        cell("LeftMargin", 10 / PX) + cell("RightMargin", 10 / PX) + cell("TopMargin", 8 / PX) + cell("BottomMargin", 8 / PX) +
+        cell("VerticalAlign", 0) +
+        characters(INK, LEGEND_FONT) +
+        paragraph("left") +
+        geometry(0, rect(box.width / PX, box.height / PX)) +
+        text(lines, true) +
+        `</Shape>`,
+    );
+  }
+
   // Notes last so they sit on top.
   for (const { mark, note, lines } of notes) {
     const color = KIND_COLOR[mark.kind ?? "none"];
@@ -320,6 +427,22 @@ export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
       data: `${XML}<PageContents ${NS} xml:space="preserve"><Shapes>${shapes.join("")}</Shapes>${connects.length ? `<Connects>${connects.join("")}</Connects>` : ""}</PageContents>`,
     },
   ]);
+}
+
+/** The States legend as one text box: a title, then a line per state; placed left of the diagram, top-aligned. */
+function legendBox(rows: ExportLegendRow[], notes: string[], drawn: Box[]) {
+  const lines = [
+    `STATES (${rows.length})`,
+    ...rows.map((r) => {
+      const [title] = r.label.split("\n");
+      return `${title}${title !== r.id ? ` [${r.id}]` : ""}${r.tags.length ? ` (${r.tags.join(", ")})` : ""}${r.count ? ` · ${r.count}` : ""}`;
+    }),
+    ...(notes.length ? ["", ...notes] : []),
+  ];
+  const height = wrappedLines(lines.join("\n"), LEGEND_WIDTH - 20, LEGEND_FONT) * LEGEND_FONT * 1.4 + 18;
+  const left = Math.min(...drawn.map((b) => b.x));
+  const top = Math.min(...drawn.map((b) => b.y));
+  return { lines, box: { x: left - LEGEND_WIDTH - 48, y: top, width: LEGEND_WIDTH, height } };
 }
 
 /** The note for a mark: its kind and text, then the thread; placed above the outline like the badge on the canvas. */
@@ -368,8 +491,14 @@ const rect = (w: number, h: number) => [
   row("LineTo", 5, { X: 0, Y: 0 }),
 ];
 
+/** An ellipse filling the box at (x, y) of size w×h, in a shape's local inches. */
+const ellipse = (x: number, y: number, w: number, h: number) =>
+  row("Ellipse", 1, { X: x + w / 2, Y: y + h / 2, A: x + w, B: y + h / 2, C: x + w / 2, D: y + h });
+
 function outline(shape: GraphNode["shape"], w: number, h: number) {
-  if (shape === "decision")
+  // The final state's ring; its dot is a shape of its own (one shape has one fill colour).
+  if (shape === "initial" || shape === "final") return geometry(0, [ellipse(0, 0, w, h)]);
+  if (shape === "decision" || shape === "choice")
     return geometry(0, [
       row("MoveTo", 1, { X: w / 2, Y: 0 }),
       row("LineTo", 2, { X: w, Y: h / 2 }),

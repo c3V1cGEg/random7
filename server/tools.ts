@@ -40,7 +40,7 @@ export function capabilities(agent?: string) {
   return {
   ...(agent ? { you: { agentName: agent, note: "Your edits are attributed to this name in the change log and the user's editor." } } : {}),
   diagram: {
-    types: "A session is a flowchart or a sequence diagram (see sequenceDiagram below). The snapshot's `type` says which.",
+    types: "A session is a flowchart, a sequence diagram or a state diagram (see sequenceDiagram and stateDiagram below). The snapshot's `type` says which.",
     syntax: "Mermaid flowchart subset",
     header: ["flowchart TD", "flowchart LR"],
     nodes: {
@@ -96,6 +96,51 @@ export function capabilities(agent?: string) {
     notSupported: "title, box, rect, create/destroy, links, bidirectional arrows. They are rejected with a line-numbered error, never dropped silently.",
     text: "#59; for ;, #35; for #, <br> for a line break.",
   },
+  stateDiagram: {
+    syntax:
+      "Mermaid stateDiagram-v2 subset: a business-level overview of how the status of one thing behaves. States are its possible values (usually an enum in the code), transitions the business events that change it. Same node/edge operations and marks as flowcharts.",
+    example: [
+      "stateDiagram-v2",
+      "    direction LR",
+      '    state "Draft" as Draft',
+      '    state "Submitted" as Submitted',
+      "    Submitted : awaiting payment",
+      '    state "Paid" as Paid',
+      '    state "Payment failed" as Failed',
+      "    state paymentOk <<choice>>",
+      "    %%@e1",
+      "    [*] --> Draft",
+      "    %%@e2",
+      "    Draft --> Submitted : submit",
+      "    %%@e3",
+      "    Submitted --> paymentOk : payment result",
+      "    %%@e4",
+      "    paymentOk --> Paid : [approved]",
+      "    %%@e5",
+      "    paymentOk --> Failed : [declined]",
+      "    %%@e6 new",
+      "    Failed --> Submitted : retry",
+      "    %%@e7",
+      "    Paid --> [*]",
+      "    class Failed new",
+    ].join("\n"),
+    statements: [
+      "direction LR (default: lifecycles read left to right) | direction TB",
+      'state "Label" as Id — a state (shape state); Id : text adds a detail line under its title',
+      "state Id <<choice>> — a choice point (shape choice; labelled by its id, so give it a meaningful id); put guards on its outgoing transitions: [approved]",
+      "A --> B : event [guard] / action — a transition (an edge); [*] --> A starts, A --> [*] ends",
+      'any --> B : event — possible from every state (cancel, delete…), drawn once and dashed. `any` is written as state "Any state" as any; nothing leads into it',
+      "%%@initial / %%@final on a line of its own — a start or end that has no transition yet",
+      "class Id1,Id2 new|changed|removed — proposal status of states; transitions carry it on their %%@ line",
+    ],
+    ids: "Each transition has an id in a `%%@id [new|changed|removed]` comment line just above it; keep these when redrawing (missing ones get generated e<k>). [*] is the node `initial` (as a source) or `final` (as a target); there is one of each.",
+    shapes: "state (default) | initial | final | choice | any. Flowchart shapes are not allowed in state diagrams.",
+    values:
+      "A state's id is its value, e.g. the enum constant (InProgress, PAYMENT_FAILED). Rename one with update_node {id, newId}; transitions, marks and instances follow.",
+    instances:
+      "Runtime objects (an order, a ticket) shown as chips on the state they are in: set_instance / remove_instance. They are data, not part of the Mermaid text; the snapshot lists them under `instances`. Use `via` with the transition id when moving one (or the list of ids through choice points, e.g. ['e3','e4']), so the user sees which transition fired.",
+    notSupported: "composite states (state X { }), parallel regions (--), <<fork>>/<<join>>, history states, notes, :::class. Rejected with a line-numbered error.",
+  },
   operations: {
     add_node: "{id?, label, shape?, status?} — label: title line, then detail lines each after the JSON escape \\n (never <br> in JSON)",
     update_node: "{id, label?, shape?, status?|null}",
@@ -109,7 +154,9 @@ export function capabilities(agent?: string) {
     remove_annotation: "{id}",
     set_direction: "{direction: TD|LR}",
     accept_changes: "{} — deletes elements with status removed and clears every status (only when the user asks)",
-    set_diagram_type: "{type: flowchart|sequence} — only on an empty canvas",
+    set_diagram_type: "{type: flowchart|sequence|state} — only on an empty canvas",
+    set_instance: "{id, label?, state?, fields?: {name: value}|null, via?: transitionId | [ids through choice points]} — state diagrams: creates (label and state required) or updates/moves a runtime instance",
+    remove_instance: "{id}",
     sequence: {
       position: "{after:id} | {before:id} | {in:fragmentId, section?, index?} | {index} — default: end of the timeline",
       add_participant: "{id?, label?, kind?: participant|actor, before?, status?}",
@@ -185,7 +232,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "canvas_apply_patch",
     description:
-      "Atomically apply operations: flowchart node/edge ops, sequence ops (participants, messages, notes, activations, fragments, move_item) or annotation ops. Requires expectedRevision. Returns the new revision and any created ids.",
+      "Atomically apply operations: flowchart/state node/edge ops, state-diagram instance ops (set_instance, remove_instance), sequence ops (participants, messages, notes, activations, fragments, move_item) or annotation ops. Requires expectedRevision. Returns the new revision and any created ids.",
     inputSchema: {
       session,
       expectedRevision: z.number().int().nonnegative(),
@@ -197,7 +244,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "canvas_replace_diagram",
     description:
-      "Initialize or deliberately redraw the whole logical diagram from Mermaid (supported subset of flowchart or sequenceDiagram; the header sets the session's diagram type). Use for the first drawing; prefer canvas_apply_patch for edits. Ids that persist (node ids, %%@ ids) keep their marks and editor positions.",
+      "Initialize or deliberately redraw the whole logical diagram from Mermaid (supported subset of flowchart, sequenceDiagram or stateDiagram-v2; the header sets the session's diagram type). Use for the first drawing; prefer canvas_apply_patch for edits. Ids that persist (node ids, %%@ ids) keep their marks and editor positions.",
     inputSchema: {
       session,
       expectedRevision: z.number().int().nonnegative(),
@@ -220,7 +267,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       session: z.string().max(48).describe("New session name: lowercase letters, digits, - or _"),
       title: z.string().max(120).optional().describe("Optional human-readable title"),
-      type: z.enum(DIAGRAM_TYPES).optional().describe('Diagram type: "flowchart" (default) or "sequence"'),
+      type: z.enum(DIAGRAM_TYPES).optional().describe('Diagram type: "flowchart" (default), "sequence" or "state"'),
     },
     run: (a, ctx) => {
       const created = ctx.sessions.create(String(a.session ?? ""), a.title as string | undefined, a.type as DiagramType | undefined);

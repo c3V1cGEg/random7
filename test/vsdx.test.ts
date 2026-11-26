@@ -103,3 +103,39 @@ test("vsdx export: straight back edges leave the side facing their target", () =
   // Now from the top of b (y 200) to the bottom of a (y 40): 160 px apart, not 240.
   assert.ok(Math.abs(cellOf(edge, "EndY") - cellOf(edge, "BeginY") - 160 / 96) < 1e-3);
 });
+
+test("vsdx export: state diagrams get dots, a labelled choice, instance chips with Shape Data and a States legend", () => {
+  const page = unzip(
+    buildVsdx({
+      title: "Orders",
+      nodes: [
+        { id: "initial", label: "Start", shape: "initial", x: 0, y: 12, width: 28, height: 28 },
+        { id: "Draft", label: "Draft", shape: "state", x: 80, y: 0, width: 160, height: 52 },
+        { id: "ok", label: "ok", shape: "choice", x: 300, y: 4, width: 44, height: 44 },
+        { id: "final", label: "End", shape: "final", x: 400, y: 9, width: 34, height: 34 },
+      ],
+      edges: [{ id: "e1", from: "initial", to: "Draft", start: { x: 28, y: 26 }, end: { x: 80, y: 26 } }],
+      marks: [],
+      lines: "straight",
+      instances: [{ id: "o1", label: "Order #1", state: "Draft", fields: { "total amount": "€5 & more" }, x: 110, y: 58, width: 90, height: 20 }],
+      legend: [{ id: "Draft", label: "Draft", count: 1, tags: ["start"] }],
+    }),
+  ).get("visio/pages/page1.xml")!;
+  const shape = (name: string) => page.match(new RegExp(`<Shape ID="\\d+" NameU="${name}"[^>]*>[\\s\\S]*?</Shape>`))?.[0] ?? "";
+  // [*] are ellipses without text; the final ring has a separate filled dot.
+  assert.match(shape("initial"), /<Row T="Ellipse"/);
+  assert.doesNotMatch(shape("initial"), /<Text>/);
+  assert.match(shape("final dot"), /<Row T="Ellipse"/);
+  // The choice is a diamond, its id written under it.
+  assert.match(shape("ok"), /<Text><cp IX="0"\/>ok<\/Text>/);
+  assert.match(shape("ok"), /<Cell N="TxtPinY" V="-/);
+  // A state: rounded, its enum value as Shape Data, purple outline while an instance is in it.
+  assert.match(shape("Draft"), /<Cell N="Rounding" V="0.1667"\/>/);
+  assert.match(shape("Draft"), /<Row N="Value"><Cell N="Value" V="Draft" U="STR"\/>/);
+  assert.match(shape("Draft"), /<Cell N="LineColor" V="#7c4dff"\/>/);
+  // The instance chip carries its fields (escaped) as Shape Data.
+  assert.match(shape("o1"), /● Order #1/);
+  assert.match(shape("o1"), /<Row N="total_amount"><Cell N="Value" V="€5 &amp; more" U="STR"\/><Cell N="Label" V="total amount"\/>/);
+  // The legend sits left of the drawing.
+  assert.match(shape("States legend"), /STATES \(1\)\n<cp IX="0"\/>Draft \(start\) · 1/);
+});
