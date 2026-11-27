@@ -5,6 +5,13 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Shorter prompt for the agent
+
+**Copy prompt for agent** now copies one short line: *"Review the marks needing your reply on the
+visual canvas."* (or *"Review my changes on …"* when no mark is waiting). The agent finds the marks
+and what they ask for on the canvas itself; the mark numbers and the "revise the diagram, reply in
+each thread, no code changes yet" part are gone.
+
 ### Mermaid size and token estimate
 
 "What the agent sees" has an **ⓘ Size** button next to Copy. It opens a small window with a rough

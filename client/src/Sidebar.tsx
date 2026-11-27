@@ -16,12 +16,11 @@ export interface ActivityItem {
 
 const short = (s: string, n = 26) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-/** Points the agent at the marks waiting for it; it answers each one in the mark's thread. */
+/** Points the agent at the marks waiting for it, in as few words as possible. */
 export function agentPrompt(marks: Annotation[]): string {
-  const open = marks.filter(awaitingAgent);
-  if (!open.length) return `Check my changes on ${canvasRef()} and revise the diagram. No code changes yet.`;
-  const refs = open.map((a) => `#${a.id}`).join(", ");
-  return `Handle marks ${refs} on ${canvasRef()}: revise the diagram as they ask and reply in each mark's thread. No code changes yet.`;
+  return marks.some(awaitingAgent)
+    ? `Review the marks needing your reply on ${canvasRef()}.`
+    : `Review my changes on ${canvasRef()}.`;
 }
 
 export function MarksPanel({
