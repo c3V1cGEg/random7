@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { findItem } from "../../server/sequence.ts";
 import { ANNOTATION_KINDS, awaitingAgent, type Annotation, type AnnotationKind } from "../../server/types.ts";
 import { canvasRef, type BrowserState, type ChangeEvent, type Operation, type OpTarget } from "./api.ts";
 import { KIND_META } from "./kinds.ts";
+import { textStats } from "./tokens.ts";
 
 export interface ActivityItem {
   key: string;
@@ -337,13 +338,67 @@ export function ActivityPanel({ items, onReveal }: { items: ActivityItem[]; onRe
   );
 }
 
-export function MermaidPanel({ diagram, onCopy }: { diagram: string; onCopy: (text: string, what: string) => void }) {
+/** Share of a model's context window, for scale: 200k tokens. */
+const CONTEXT = 200_000;
+
+/** A small window with the Mermaid's size and a rough token count (estimated, no tokenizer). */
+function SizeInfo({ text, onClose }: { text: string; onClose: () => void }) {
+  const s = textStats(text);
+  const share = (s.tokens / CONTEXT) * 100;
+  const n = (v: number) => v.toLocaleString();
+  useEffect(() => {
+    const close = (e: Event) => {
+      if (!(e.target as Element | null)?.closest?.(".size-info, .size-btn")) onClose();
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
   return (
-    <details className="panel">
-      <summary>What the agent sees (Mermaid)</summary>
-      <button className="ghost small" onClick={() => onCopy(diagram, "Mermaid")}>
-        ⧉ Copy
+    <div className="size-info" role="dialog" aria-label="Mermaid size">
+      <button className="close" onClick={onClose} title="Close (Esc)">
+        ×
       </button>
+      <div className="big">
+        ≈ {n(s.tokens)} <span>tokens</span>
+      </div>
+      <dl>
+        <dt>Characters</dt>
+        <dd>{n(s.chars)}</dd>
+        <dt>Size</dt>
+        <dd>{s.bytes < 1024 ? `${n(s.bytes)} bytes` : `${(s.bytes / 1024).toFixed(1)} KB`}</dd>
+        <dt>Lines</dt>
+        <dd>{n(s.lines)}</dd>
+        <dt>Of a 200k context</dt>
+        <dd>{share < 0.01 ? "< 0.01" : share < 1 ? share.toFixed(2) : share.toFixed(1)}%</dd>
+      </dl>
+      <p className="muted">
+        An estimate (±25%) without the model's tokenizer. The agent also gets marks and ids alongside the Mermaid, so a snapshot is a
+        little bigger.
+      </p>
+    </div>
+  );
+}
+
+export function MermaidPanel({ diagram, onCopy }: { diagram: string; onCopy: (text: string, what: string) => void }) {
+  const [info, setInfo] = useState(false);
+  const close = useCallback(() => setInfo(false), []);
+  return (
+    <details className="panel mermaid-panel">
+      <summary>What the agent sees (Mermaid)</summary>
+      <span className="mermaid-tools">
+        <button className="ghost small" onClick={() => onCopy(diagram, "Mermaid")}>
+          ⧉ Copy
+        </button>
+        <button className={`ghost small size-btn${info ? " on" : ""}`} onClick={() => setInfo((v) => !v)} title="Size and token estimate">
+          ⓘ Size
+        </button>
+        {info && <SizeInfo text={diagram} onClose={close} />}
+      </span>
       <pre className="mermaid-src">{diagram}</pre>
     </details>
   );

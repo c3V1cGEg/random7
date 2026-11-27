@@ -5,6 +5,12 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Mermaid size and token estimate
+
+"What the agent sees" has an **ⓘ Size** button next to Copy. It opens a small window with a rough
+token count for the Mermaid, its characters, size in bytes, lines and share of a 200k context. The
+count is estimated without a tokenizer (about ±25%). Esc or a click elsewhere closes it.
+
 ### Arrows turn to every side
 
 Moving a box round a connected one now moves the arrow to all four sides: above, right, below and

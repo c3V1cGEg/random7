@@ -127,6 +127,19 @@ button.icon.danger:hover { color: var(--k-incorrect); }
 .who { font-size: 10px; text-transform: uppercase; padding: 1px 5px; border-radius: 3px; font-weight: 700; }
 .who.agent { background: #f1ecff; color: var(--agent); }
 .who.user { background: #eceae4; color: #555; }
+.mermaid-tools { position: relative; display: flex; gap: 6px; }
+.mermaid-tools .size-btn.on { background: #e7eefc; color: var(--accent); }
+.size-info {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; width: 240px; padding: 12px 14px 10px;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 20px #0002;
+}
+.size-info .close { position: absolute; top: 4px; right: 6px; border: 0; background: none; font-size: 16px; color: #888; cursor: pointer; }
+.size-info .big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.size-info .big span { font-size: 13px; font-weight: 500; color: #666; }
+.size-info dl { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; margin: 8px 0; font-size: 12.5px; }
+.size-info dt { color: #666; }
+.size-info dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.size-info p { font-size: 11.5px; margin: 0; line-height: 1.35; }
 .mermaid-src { font-size: 11px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
 
 /* kind colours: shared by rings, cards, chips and badges */
