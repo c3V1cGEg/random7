@@ -180,9 +180,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const [missingSession, setMissingSession] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
-  /** Connect mode: dropping a step onto another connects them (the dropped step returns to its place). */
+  /** Connect mode: bumping a dragged step into another connects them (the dragged step returns to its place). */
   const [connectMode, setConnectMode] = useState(false);
   const [connectTarget, setConnectTarget] = useState<string | null>(null);
+  /** Connect mode, during a drag: the step under the pointer, pending bumps, the arrow last touched. */
+  const bump = useRef<{ over: string | null; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
   const reversedEdges = useRef(new Map<string, string>());
   /** Sequence diagrams: keep lane names visible at the left edge while scrolling (remembered per browser). */
@@ -856,6 +858,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const onNodeDragStart = useCallback((_: unknown, __: unknown, dragged: CanvasNode[]) => {
     dragStart.current = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
     dragged.forEach((n) => dragging.current.add(n.id));
+    bump.current.edge = null;
   }, []);
 
   /**
@@ -865,7 +868,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const cycleDirection = useCallback(
     (ids: string[]) => {
       const s = stateRef.current;
-      if (!s || s.type === "sequence") return;
+      if (!s || s.type === "sequence") return Promise.resolve(undefined);
       const ops: Operation[] = [];
       const clearAnchors: Record<string, { from: null; to: null }> = {};
       for (const id of ids) {
@@ -885,9 +888,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           clearAnchors[id] = { from: null, to: null };
         }
       }
-      if (!ops.length) return;
+      if (!ops.length) return Promise.resolve(undefined);
       if (Object.keys(clearAnchors).length) void postLayout({}, clearAnchors).catch(() => undefined);
-      void send(ops);
+      return send(ops);
     },
     [send],
   );
@@ -910,18 +913,51 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     [connectMode, rf],
   );
 
+  /**
+   * Connect mode, in one drag: each time the dragged step comes over another step, the first time
+   * connects them and every further time turns that arrow one step (reversed → both ends → as it was).
+   * Bumps run one after another, each on the state the previous one left.
+   */
+  const bumpInto = useCallback(
+    (from: string, target: string) => {
+      const b = bump.current;
+      b.bumped = true;
+      b.queue = b.queue.then(async () => {
+        const existing = stateRef.current?.edges.findLast((e) => (e.from === from && e.to === target) || (e.from === target && e.to === from));
+        if (existing) {
+          b.edge = existing.id;
+          await cycleDirection([existing.id]);
+          return;
+        }
+        const res = await send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]);
+        b.edge = res?.createdEdgeIds?.[0] ?? null;
+      });
+    },
+    [autoEdgeLabel, cycleDirection, send],
+  );
+
   const onNodeDrag = useCallback(
-    (event: MouseEvent | TouchEvent, _: unknown, dragged: CanvasNode[]) => setConnectTarget(connectHit(event, dragged)),
-    [connectHit],
+    (event: MouseEvent | TouchEvent, _: unknown, dragged: CanvasNode[]) => {
+      const hit = connectHit(event, dragged);
+      setConnectTarget(hit);
+      const b = bump.current;
+      if (hit !== b.over) {
+        b.over = hit;
+        if (hit) bumpInto(dragged[0].id, hit);
+      }
+    },
+    [bumpInto, connectHit],
   );
 
   const onNodeDragStop = useCallback(
-    (event: MouseEvent | TouchEvent, __: unknown, dragged: CanvasNode[]) => {
+    (_: MouseEvent | TouchEvent, __: unknown, dragged: CanvasNode[]) => {
       const before = dragStart.current;
-      const target = connectHit(event, dragged);
+      const b = bump.current;
       setConnectTarget(null);
-      if (target) {
-        // Connect mode: the dropped step goes back where it was, and is connected to the one it landed on.
+      b.over = null;
+      if (b.bumped) {
+        // Connect mode: the dragged step goes back where it was; the arrow it last touched is selected.
+        b.bumped = false;
         const from = dragged[0].id;
         dragging.current.delete(from);
         const home = before[from];
@@ -929,17 +965,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           positions.current[from] = home;
           setNodes((nds) => nds.map((n) => (n.id === from ? place(n, home) : n)));
         }
-        // Dropped again on a step it is already connected to: the next step of the direction cycle, as R does.
-        const existing = stateRef.current?.edges.findLast((e) => (e.from === from && e.to === target) || (e.from === target && e.to === from));
-        if (existing) {
-          cycleDirection([existing.id]);
-          selectOnly([existing.id]);
-          return;
-        }
-        void send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]).then((res) => {
-          const id = res?.createdEdgeIds?.[0];
-          if (id) selectOnly([id]);
-        });
+        void b.queue.then(() => b.edge && selectOnly([b.edge]));
         return;
       }
       const after = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
@@ -949,7 +975,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         setEdgeVersion((v) => v + 1);
       }
     },
-    [autoEdgeLabel, connectHit, cycleDirection, movedText, selectOnly, send, shareLayout],
+    [movedText, selectOnly, shareLayout],
   );
 
   // The step a dragged step would connect to in connect mode is highlighted.
@@ -1520,7 +1546,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                 className={connectMode ? "on" : ""}
                 aria-pressed={connectMode}
                 onClick={() => setConnectMode((on) => !on)}
-                title={`Connect mode ${connectMode ? "on" : "off"}: drop a ${isState ? "state" : "step"} onto another to connect them (C, Esc leaves)`}
+                title={`Connect mode ${connectMode ? "on" : "off"}: drag a ${isState ? "state" : "step"} into another to connect them, again to turn the arrow (C, Esc leaves)`}
               >
                 ⤳ Connect <kbd>C</kbd>
               </button>
@@ -2110,7 +2136,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Shift+Enter", "While typing: add a detail line inside the step; start it with + / - / ~ for added / dropped / modified"],
   ["New / Changed / Removed", "Selection bar: colour the selection as part of a proposed change (click again to clear)"],
   ["Drag from a handle", "Connect; drop on empty canvas to create a connected step"],
-  ["C", "Connect mode on / off: drop a step onto another to connect them (the dropped step stays put); drop again to change the arrow's direction"],
+  ["C", "Connect mode on / off: drag a step into another to connect them; out and back in again (still dragging) changes the arrow's direction"],
   ["R or ⇄", "Selected arrow: reverse → arrowheads at both ends → as it was"],
   ["Alt-click an arrow", "The same direction step, without selecting it first (Option-click on a Mac)"],
   ["M", "Mark the selection (then type the note)"],

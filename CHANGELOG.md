@@ -15,10 +15,11 @@ reversed → arrowheads at both ends → back as it was. Two-way arrows are Merm
 drops end points you placed by hand.
 
 **Connect mode** (`C`, or **⤳ Connect** in the toolbar) connects steps without aiming for a handle.
-Drag a step onto another: the target is outlined, and on release the arrow is drawn from the dragged
-step to the target. The dragged step goes back to where it was, and the new arrow is selected, so `R`
-turns it around straight away. Dropping one of the two steps onto the other again does the same: each
-further drop moves that arrow one step through reversed → both ends → as it was. Dropped on empty canvas, a step simply moves. A banner shows while the
+Drag a step and bump it into another: the target is outlined and the arrow is drawn at once, from the
+dragged step to the target. Without letting go, move out and back over it again: each further bump
+turns that arrow one step through reversed → both ends → as it was. Bumping another step connects that
+one too. On release the dragged step goes back to where it was and the arrow last touched is selected.
+A drag that bumps nothing simply moves the step. A banner shows while the
 mode is on, and `C` or `Esc` leaves it. Visio export draws both arrowheads.
 
 ![Connect mode on, with its banner; Order service and Payment joined by a two-way arrow, Payment to Ledger one way](docs/changelog/two-way-arrow-connect-mode.png)
