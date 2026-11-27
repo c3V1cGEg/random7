@@ -1,0 +1,18 @@
+# Runs the canvas server in a container:  docker compose -f docker/compose.yaml up -d --build
+# Editor: http://localhost:4317/   MCP: http://localhost:4317/mcp
+name: visual-agent-canvas
+services:
+  canvas:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: visual-agent-canvas
+    ports:
+      # Only on this machine (127.0.0.1), and the same port number on both sides: the server
+      # accepts requests for localhost:4317 / 127.0.0.1:4317 only.
+      - "127.0.0.1:4317:4317"
+    volumes:
+      # Sessions stay outside the container, in the repo's .canvas-sessions folder (git-ignored),
+      # where you can copy or back them up. Set CANVAS_SESSIONS_DIR to keep them elsewhere.
+      - ${CANVAS_SESSIONS_DIR:-../.canvas-sessions}:/data
+    restart: unless-stopped

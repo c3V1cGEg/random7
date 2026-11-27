@@ -1,0 +1,10 @@
+# Kept out of the Docker image (docker/Dockerfile): local data, build output, history.
+node_modules
+client/dist
+.canvas-sessions
+.scratch
+temp
+.git
+docker
+docs/changelog
+*.log

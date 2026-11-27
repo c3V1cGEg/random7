@@ -21,7 +21,10 @@ import { SemanticFilter, type SemanticChange } from "./semantic.ts";
 import type { CanvasStore } from "./store.ts";
 import { CanvasError, SIDES } from "./types.ts";
 
-const HOST = "127.0.0.1";
+// The address to listen on. Keep 127.0.0.1 unless the server runs in a container whose port is
+// published to the host (CANVAS_HOST=0.0.0.0, see docker/). Requests are still accepted only for
+// Host localhost / 127.0.0.1, so publish the port on the host's 127.0.0.1 and with the same number.
+const HOST = process.env.CANVAS_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.CANVAS_PORT ?? 4317);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = process.env.CANVAS_PERSIST === "0" ? null : path.resolve(process.env.CANVAS_DATA_DIR ?? path.join(ROOT, ".canvas-sessions"));
@@ -29,7 +32,8 @@ const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
 
 const sessions = new SessionManager(DATA_DIR);
-const app = createMcpExpressApp({ host: HOST }); // includes Host-header (DNS rebinding) validation
+// Host-header (DNS rebinding) validation, also when listening on all interfaces in a container
+const app = createMcpExpressApp({ host: HOST, allowedHosts: ["127.0.0.1", "localhost"] });
 
 /** A malicious web page cannot forge Origin; reject any cross-origin request. */
 function originAllowed(origin: string | undefined): boolean {
@@ -435,8 +439,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Visual Agent Canvas`);
-  console.log(`  editor: http://${HOST}:${PORT}/`);
-  console.log(`  MCP:    http://${HOST}:${PORT}/mcp   (Streamable HTTP; add ?agent=<name> to name the agent)`);
+  console.log(`  editor: http://127.0.0.1:${PORT}/`);
+  console.log(`  MCP:    http://127.0.0.1:${PORT}/mcp   (Streamable HTTP; add ?agent=<name> to name the agent)`);
+  if (HOST !== "127.0.0.1") console.log(`  listening on ${HOST}:${PORT} (CANVAS_HOST)`);
   console.log(
     DATA_DIR
       ? `  sessions saved in ${DATA_DIR} (${sessions.list().map((s) => s.name).join(", ")})`

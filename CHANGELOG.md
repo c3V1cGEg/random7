@@ -3,6 +3,16 @@
 Newest first. Changes you can see in the editor come with a screenshot; the images live in
 [`docs/changelog/`](docs/changelog/).
 
+## 2026-11-27
+
+### Run the canvas in Docker
+
+`docker compose -f docker/compose.yaml up -d --build` builds and starts the canvas server in a
+container. The editor and MCP are on `http://localhost:4317/`, published on this machine only.
+Sessions stay outside the container, in the repo's `.canvas-sessions` folder. The new `CANVAS_HOST`
+setting sets the address the server listens on (default `127.0.0.1`), and the Host-header check now
+applies on every address. See *Run → In Docker* in the README.
+
 ## 2026-11-26
 
 ### State diagrams (POC)

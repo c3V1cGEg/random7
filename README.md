@@ -20,6 +20,22 @@ npm start          # builds the editor, then serves http://127.0.0.1:4317/ and M
 
 `CANVAS_PORT=5000 npm start` changes the port.
 
+### In Docker
+
+```bash
+docker compose -f docker/compose.yaml up -d --build   # editor http://localhost:4317/, MCP at /mcp
+docker compose -f docker/compose.yaml logs -f         # server output
+docker compose -f docker/compose.yaml down            # stop
+```
+
+The image builds the editor and runs the server with `CANVAS_HOST=0.0.0.0`, the address the server
+listens on (default `127.0.0.1`). The port is published on the host's `127.0.0.1` only, so other
+machines can't reach the canvas, and with the same number on both sides: the server accepts requests
+only for `localhost:<port>` and `127.0.0.1:<port>`. Sessions are kept outside the container in the
+repo's `.canvas-sessions` folder, mounted at `/data`, where you can copy or back them up. Set
+`CANVAS_SESSIONS_DIR` to mount a different folder. The server runs as the image's `node` user
+(uid 1000), so that folder must be writable for it.
+
 ## Sessions
 
 The server holds any number of **named canvas sessions**. Each one is an independent canvas with
