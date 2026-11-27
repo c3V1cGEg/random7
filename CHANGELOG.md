@@ -7,10 +7,10 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ### Shorter prompt for the agent
 
-**Copy prompt for agent** now copies one short line: *"Review the marks needing your reply on the
-visual canvas."* (or *"Review my changes on …"* when no mark is waiting). The agent finds the marks
-and what they ask for on the canvas itself; the mark numbers and the "revise the diagram, reply in
-each thread, no code changes yet" part are gone.
+**Copy prompt for agent** now copies one short line: *"Review marks #1, #2 needing your reply on the
+visual canvas (session "default")."* (or *"Review my changes on …"* when no mark is waiting). The
+"revise the diagram, reply in each thread, no code changes yet" part is gone. The session name is
+now always included, also for the default session, so the agent never guesses which canvas is meant.
 
 ### Mermaid size and token estimate
 

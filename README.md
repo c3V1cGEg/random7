@@ -52,7 +52,7 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
   the divider drags (double-click: equal halves).
 - **Agents:** every tool takes an optional `session` argument (default `default`). Tell the agent
   which one to use, e.g. *"…on the visual canvas (session "auth-redesign")"*. **Copy prompt for
-  agent** includes the name for you. Agents can also call `canvas_list_sessions`, and
+  agent** always includes the name for you, also `default`. Agents can also call `canvas_list_sessions`, and
   `canvas_create_session` when you ask them to.
 - **Saved to disk:** sessions are written to `.canvas-sessions/<name>.json` (diagram, marks,
   layout) and reloaded on start. `CANVAS_DATA_DIR=/path` moves the folder; `CANVAS_PERSIST=0` keeps

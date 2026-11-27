@@ -96,7 +96,7 @@ export async function deleteSession(name: string): Promise<void> {
 }
 
 /** How to refer to this canvas in a prompt, so the agent passes the right session. */
-export const canvasRef = () => (SESSION === "default" ? "the visual canvas" : `the visual canvas (session "${SESSION}")`);
+export const canvasRef = () => `the visual canvas (session "${SESSION}")`;
 
 export const sessionUrl = (name: string) => (name === "default" ? "/" : `/s/${encodeURIComponent(name)}`);
 

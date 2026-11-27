@@ -18,9 +18,10 @@ const short = (s: string, n = 26) => (s.length > n ? s.slice(0, n - 1) + "…" :
 
 /** Points the agent at the marks waiting for it, in as few words as possible. */
 export function agentPrompt(marks: Annotation[]): string {
-  return marks.some(awaitingAgent)
-    ? `Review the marks needing your reply on ${canvasRef()}.`
-    : `Review my changes on ${canvasRef()}.`;
+  const open = marks.filter(awaitingAgent);
+  if (!open.length) return `Review my changes on ${canvasRef()}.`;
+  const refs = open.map((a) => `#${a.id}`).join(", ");
+  return `Review mark${open.length > 1 ? "s" : ""} ${refs} needing your reply on ${canvasRef()}.`;
 }
 
 export function MarksPanel({
