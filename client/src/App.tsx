@@ -858,6 +858,40 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     dragged.forEach((n) => dragging.current.add(n.id));
   }, []);
 
+  /**
+   * One click per step: reversed → arrowheads at both ends → back as it was. State diagrams have no
+   * two-way transitions, so there it only reverses. A reversed edge loses ends placed by hand.
+   */
+  const cycleDirection = useCallback(
+    (ids: string[]) => {
+      const s = stateRef.current;
+      if (!s || s.type === "sequence") return;
+      const ops: Operation[] = [];
+      const clearAnchors: Record<string, { from: null; to: null }> = {};
+      for (const id of ids) {
+        const e = s.edges.find((x) => x.id === id);
+        if (!e) continue;
+        const key = `${e.from}>${e.to}`;
+        if (s.type === "flowchart" && !e.both && reversedEdges.current.get(id) === key) {
+          ops.push({ op: "update_edge", id, both: true });
+          reversedEdges.current.delete(id);
+          continue;
+        }
+        ops.push({ op: "update_edge", id, from: e.to, to: e.from, ...(e.both ? { both: false } : {}) });
+        if (e.both) reversedEdges.current.delete(id);
+        else reversedEdges.current.set(id, `${e.to}>${e.from}`);
+        if (anchors.current[id]) {
+          delete anchors.current[id];
+          clearAnchors[id] = { from: null, to: null };
+        }
+      }
+      if (!ops.length) return;
+      if (Object.keys(clearAnchors).length) void postLayout({}, clearAnchors).catch(() => undefined);
+      void send(ops);
+    },
+    [send],
+  );
+
   /** Connect mode: the step under the pointer while one step is dragged, other than the dragged one. */
   const connectHit = useCallback(
     (event: MouseEvent | TouchEvent, dragged: CanvasNode[]): string | null => {
@@ -895,8 +929,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           positions.current[from] = home;
           setNodes((nds) => nds.map((n) => (n.id === from ? place(n, home) : n)));
         }
-        if (stateRef.current?.edges.some((e) => (e.from === from && e.to === target) || (e.both && e.from === target && e.to === from))) {
-          showToast("These two are already connected");
+        // Dropped again on a step it is already connected to: the next step of the direction cycle, as R does.
+        const existing = stateRef.current?.edges.findLast((e) => (e.from === from && e.to === target) || (e.from === target && e.to === from));
+        if (existing) {
+          cycleDirection([existing.id]);
+          selectOnly([existing.id]);
           return;
         }
         void send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]).then((res) => {
@@ -912,7 +949,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         setEdgeVersion((v) => v + 1);
       }
     },
-    [autoEdgeLabel, connectHit, movedText, selectOnly, send, shareLayout, showToast],
+    [autoEdgeLabel, connectHit, cycleDirection, movedText, selectOnly, send, shareLayout],
   );
 
   // The step a dragged step would connect to in connect mode is highlighted.
@@ -923,40 +960,6 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         : nds,
     );
   }, [connectTarget, nodes.length]);
-
-  /**
-   * One click per step: reversed → arrowheads at both ends → back as it was. State diagrams have no
-   * two-way transitions, so there it only reverses. A reversed edge loses ends placed by hand.
-   */
-  const cycleDirection = useCallback(
-    (ids: string[]) => {
-      const s = stateRef.current;
-      if (!s || s.type === "sequence") return;
-      const ops: Operation[] = [];
-      const clearAnchors: Record<string, { from: null; to: null }> = {};
-      for (const id of ids) {
-        const e = s.edges.find((x) => x.id === id);
-        if (!e) continue;
-        const key = `${e.from}>${e.to}`;
-        if (s.type === "flowchart" && !e.both && reversedEdges.current.get(id) === key) {
-          ops.push({ op: "update_edge", id, both: true });
-          reversedEdges.current.delete(id);
-          continue;
-        }
-        ops.push({ op: "update_edge", id, from: e.to, to: e.from, ...(e.both ? { both: false } : {}) });
-        if (e.both) reversedEdges.current.delete(id);
-        else reversedEdges.current.set(id, `${e.to}>${e.from}`);
-        if (anchors.current[id]) {
-          delete anchors.current[id];
-          clearAnchors[id] = { from: null, to: null };
-        }
-      }
-      if (!ops.length) return;
-      if (Object.keys(clearAnchors).length) void postLayout({}, clearAnchors).catch(() => undefined);
-      void send(ops);
-    },
-    [send],
-  );
 
   /** Dragging a mark's bubble moves every element it wraps; `delta` null ends the drag (one undo step). */
   const groupDrag = useRef<Record<string, XY> | null>(null);
@@ -2101,7 +2104,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Shift+Enter", "While typing: add a detail line inside the step; start it with + / - / ~ for added / dropped / modified"],
   ["New / Changed / Removed", "Selection bar: colour the selection as part of a proposed change (click again to clear)"],
   ["Drag from a handle", "Connect; drop on empty canvas to create a connected step"],
-  ["C", "Connect mode on / off: drop a step onto another to connect them (the dropped step stays put)"],
+  ["C", "Connect mode on / off: drop a step onto another to connect them (the dropped step stays put); drop again to change the arrow's direction"],
   ["R or ⇄", "Selected arrow: reverse → arrowheads at both ends → as it was"],
   ["M", "Mark the selection (then type the note)"],
   ["Drag on canvas", "Box-select (touching counts)"],

@@ -16,7 +16,8 @@ drops end points you placed by hand.
 **Connect mode** (`C`, or **⤳ Connect** in the toolbar) connects steps without aiming for a handle.
 Drag a step onto another: the target is outlined, and on release the arrow is drawn from the dragged
 step to the target. The dragged step goes back to where it was, and the new arrow is selected, so `R`
-turns it around straight away. Dropped on empty canvas, a step simply moves. A banner shows while the
+turns it around straight away. Dropping one of the two steps onto the other again does the same: each
+further drop moves that arrow one step through reversed → both ends → as it was. Dropped on empty canvas, a step simply moves. A banner shows while the
 mode is on, and `C` or `Esc` leaves it. Visio export draws both arrowheads.
 
 ![Connect mode on, with its banner; Order service and Payment joined by a two-way arrow, Payment to Ledger one way](docs/changelog/two-way-arrow-connect-mode.png)
