@@ -5,6 +5,13 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Arrows turn to every side
+
+Moving a box round a connected one now moves the arrow to all four sides: above, right, below and
+left. Before, a box moved above the one it leads to still left from its bottom and came round into
+the other's top, so the arrow never used the bottom side of the box it pointed at. Boxes in a column
+join top and bottom, boxes in a row join left and right; diagonal places lean to the diagram's flow.
+
 ### Clear canvas starts over completely
 
 **Clear canvas** used to empty the diagram but keep the revision list growing (a default canvas

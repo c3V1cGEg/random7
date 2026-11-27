@@ -59,3 +59,21 @@ test("connect mode attaches the arrow where the boxes first touched", async () =
   // From the right: left side to right side.
   assert.deepEqual([contactEnds(box(500, 10), box(470, 10), target).from.side, contactEnds(box(500, 10), box(470, 10), target).to.side], ["left", "right"]);
 });
+
+test("automatic sides turn to all four sides as a box goes round the other", () => {
+  const center = box(300, 300);
+  const around = (x: number, y: number) => autoSides("TD", center, box(x, y));
+  assert.deepEqual(around(300, 500), { from: "bottom", to: "top" }, "below");
+  assert.deepEqual(around(600, 300), { from: "right", to: "left" }, "right");
+  assert.deepEqual(around(300, 100), { from: "top", to: "bottom" }, "above");
+  assert.deepEqual(around(0, 300), { from: "left", to: "right" }, "left");
+  // The moved box is the arrow's start: it leaves from its bottom when it is above.
+  assert.deepEqual(autoSides("TD", box(300, 100), center), { from: "bottom", to: "top" });
+  assert.deepEqual(autoSides("TD", box(300, 500), center), { from: "top", to: "bottom" });
+  // Left-right diagrams too.
+  const lr = (x: number, y: number) => autoSides("LR", center, box(x, y));
+  assert.deepEqual(lr(0, 320), { from: "left", to: "right" });
+  assert.deepEqual(lr(600, 280), { from: "right", to: "left" });
+  assert.deepEqual(lr(310, 0), { from: "top", to: "bottom" });
+  assert.deepEqual(lr(310, 600), { from: "bottom", to: "top" });
+});

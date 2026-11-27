@@ -34,12 +34,19 @@ export function autoSides(direction: Direction, from: Rect | undefined, to: Rect
   const gap = (a0: number, a1: number, b0: number, b1: number) => Math.max(b0 - a1, a0 - b1);
   const vGap = gap(from.y, from.y + from.height, to.y, to.y + to.height);
   const hGap = gap(from.x, from.x + from.width, to.x, to.x + to.width);
-  if (direction === "LR") {
-    if (hGap >= SIDE_BY_SIDE || vGap <= 0) return sides;
-    return to.y > from.y ? { from: "bottom", to: "top" } : { from: "top", to: "bottom" };
-  }
-  if (vGap >= SIDE_BY_SIDE || hGap <= 0) return sides;
-  return to.x > from.x ? { from: "right", to: "left" } : { from: "left", to: "right" };
+  // Boxes on top of each other (one being dragged over the other): the flow's sides.
+  if (vGap <= 0 && hGap <= 0) return sides;
+  // Facing sides, all four possible: above or below joins top and bottom, beside joins left and right.
+  // Diagonal places lean to the flow's axis (top-down: top and bottom) unless clearly more beside than
+  // above; boxes in a row or a column always face each other.
+  const vertical =
+    direction === "LR"
+      ? hGap <= 0 || (vGap >= SIDE_BY_SIDE && vGap > 2 * hGap)
+      : vGap >= SIDE_BY_SIDE && (hGap <= 0 || 2 * vGap >= hGap);
+  const cy = (r: Rect) => r.y + r.height / 2;
+  const cx = (r: Rect) => r.x + r.width / 2;
+  if (vertical) return cy(to) >= cy(from) ? { from: "bottom", to: "top" } : { from: "top", to: "bottom" };
+  return cx(to) >= cx(from) ? { from: "right", to: "left" } : { from: "left", to: "right" };
 }
 
 /**
