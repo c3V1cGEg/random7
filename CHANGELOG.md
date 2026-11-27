@@ -5,6 +5,14 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### New boxes never land on other boxes
+
+A step, decision or start/end added with `N`, `D`, `T`, the toolbar, a double-click, or by dropping a
+handle on the canvas goes to the nearest free place when the wanted spot is taken. It never lands on
+top of another box (or touching one), where connect mode would join the two as soon as you moved it.
+In connect mode, a drag that starts with a box under the pointer no longer counts that box as a bump:
+only coming over a box during the drag connects.
+
 ### Arrows that sit where you expect
 
 A pass over connecting and arrow handling by hand:

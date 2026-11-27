@@ -314,6 +314,7 @@ An agent (or you) can show a change to an existing flow on the canvas instead of
 | Do | How |
 |---|---|
 | Add a step / decision / start-end (data store: via the shape buttons) | `N` / `D` / `T` at the mouse, the toolbar, or double-click the canvas |
+| Where new boxes go | At the pointer (or the double-click / drop point); if that place is taken, the nearest free place, never on top of another box |
 | Type a flow | Type the label, press `Tab` for the next connected step, `Enter` to finish |
 | Connect | Drag from a handle onto a node. Drop on empty canvas to create a connected step there |
 | Connect quickly | `C` or **⤳ Connect** turns connect mode on: bump a step into another while dragging and they are connected at once. Without letting go, move out and back over it again: each further bump turns that arrow one step through the direction cycle below, like `R`. On release the dragged step goes back to its place and the arrow is selected. A drag that bumps nothing just moves the step. `C` or `Esc` leaves |

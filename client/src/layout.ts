@@ -131,3 +131,29 @@ function avoidOverlap(
   }
   return q;
 }
+
+type Box = { x: number; y: number; width: number; height: number };
+const near = (a: Box, b: Box, gap = 20) => a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
+
+/**
+ * The free spot nearest `center` for a box of `size`: rings around the wanted place, closest first, so
+ * a new box never lands on (or touching) another one, where connect mode would join them at once.
+ */
+export function freeSpot(center: XY, size: { width: number; height: number }, others: Box[]): XY {
+  const at = (c: XY) => ({ x: c.x - size.width / 2, y: c.y - size.height / 2, ...size });
+  if (!others.some((o) => near(at(center), o))) return center;
+  for (let r = 24; r <= 2400; r += 24) {
+    const steps = Math.max(8, Math.round((2 * Math.PI * r) / 24));
+    let best: XY | null = null;
+    for (let i = 0; i < steps; i++) {
+      const a = (2 * Math.PI * i) / steps;
+      const c = { x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) };
+      if (others.some((o) => near(at(c), o))) continue;
+      // Of the free places at this distance, prefer straight below or beside: tidier than diagonal.
+      if (!best || Math.abs(Math.sin(2 * a)) < Math.abs(Math.sin(2 * Math.atan2(best.y - center.y, best.x - center.x)))) best = c;
+    }
+    if (best) return { x: Math.round(best.x), y: Math.round(best.y) };
+  }
+  return center;
+}
+

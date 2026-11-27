@@ -47,7 +47,7 @@ import {
 } from "./api.ts";
 import { ActionsContext, edgeTypes, nodeTypes, type CanvasActions, type CanvasEdge, type CanvasNode, type TypeAhead } from "./elements.tsx";
 import { KIND_META } from "./kinds.ts";
-import { DEFAULT_SIZE, dagreLayout, placeMissing, type Size, type XY } from "./layout.ts";
+import { DEFAULT_SIZE, dagreLayout, freeSpot, placeMissing, type Size, type XY } from "./layout.ts";
 import { ChangeLegend, StateLegend, stateOrder, stateValue } from "./Legend.tsx";
 import { OverflowTip } from "./OverflowTip.tsx";
 import { walkItems } from "../../server/sequence.ts";
@@ -189,7 +189,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   /** Automatic arrow sides of the arrows on the dragged steps, as last drawn (redrawn when they change). */
   const dragSides = useRef("");
   /** Connect mode, during a drag: the step under the pointer, pending bumps, the arrow last touched. */
-  const bump = useRef<{ over: string | null; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
+  const bump = useRef<{ over: string | null | undefined; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
   const reversedEdges = useRef(new Map<string, string>());
   /** Ends placed by hand before an edge was first reversed (null: none), restored when it is back as it was. */
@@ -798,7 +798,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       }
       pendingGroups.current.set(`node:${id}`, group);
       const size = DEFAULT_SIZE[shape];
-      setPosition(id, { x: center.x - size.width / 2, y: center.y - size.height / 2 });
+      const others = rf.getNodes().filter((n) => n.id !== id && !isDecoration(n.id)).map(nodeRect);
+      const c = stateRef.current?.type === "sequence" ? center : freeSpot(center, size, others);
+      setPosition(id, { x: c.x - size.width / 2, y: c.y - size.height / 2 });
       if (link) {
         const [from, to] = link.as === "source" ? [link.id, id] : [id, link.id];
         await send([{ op: "add_edge", from, to, ...autoEdgeLabel(from) }], group);
@@ -806,7 +808,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       selectOnly([id]);
       if (labelled) setEditingId(id);
     },
-    [autoEdgeLabel, selectOnly, send, setPosition],
+    [autoEdgeLabel, rf, selectOnly, send, setPosition],
   );
 
   const pointerOrCenter = useCallback((): XY => {
@@ -874,6 +876,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     dragStart.current = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
     dragged.forEach((n) => dragging.current.add(n.id));
     bump.current.edge = null;
+    // Whatever is under the pointer when the drag starts (a box lying under the dragged one) is not a
+    // bump: only coming over a box during the drag connects.
+    bump.current.over = undefined;
     dragSides.current = "";
     setNodeDrag(true);
   }, []);
@@ -1055,7 +1060,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const hit = connectHit(event, dragged);
       setConnectTarget(hit);
       const b = bump.current;
-      if (hit !== b.over) {
+      if (b.over === undefined) b.over = hit;
+      else if (hit !== b.over) {
         b.over = hit;
         if (hit) bumpInto(dragged[0].id, hit);
       }
