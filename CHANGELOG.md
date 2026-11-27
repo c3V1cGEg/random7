@@ -5,6 +5,13 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Connect mode: the arrow starts where the boxes touched
+
+Bumping a step into another now draws the new arrow between the two sides that touched first, at the
+middle of where they touched: come in from the right and the arrow joins the dragged step's left side
+to the other's right side; come up from below and it runs from top to bottom. The ends stay where they
+were set (drag them or double-click them to change), and one undo takes back the arrow with its ends.
+
 ### New boxes never land on other boxes
 
 A step, decision or start/end added with `N`, `D`, `T`, the toolbar, a double-click, or by dropping a

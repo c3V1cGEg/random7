@@ -43,3 +43,19 @@ test("a dropped end goes to the nearest side of the box, measured to the side it
   assert.equal(nearestAnchor(pill, { x: 10, y: 15 }).side, "left", "inside, near the left edge");
   assert.deepEqual(nearestAnchor(pill, { x: 35, y: -30 }), { side: "top", t: 0.25 });
 });
+
+test("connect mode attaches the arrow where the boxes first touched", async () => {
+  const { contactEnds } = await import("../client/src/anchors.ts");
+  const target = box(300, 0);
+  // From the left, level: right side to left side, middles.
+  assert.deepEqual(contactEnds(box(110, 0), box(130, 0), target), { from: { side: "right", t: 0.5 }, to: { side: "left", t: 0.5 } });
+  // From above, a little to the right: bottom to top, at the middle of the touching stretch.
+  const e = contactEnds(box(400, -70), box(400, -50), target);
+  assert.equal(e.from.side, "bottom");
+  assert.equal(e.to.side, "top");
+  assert.ok(e.from.t < 0.5 && e.to.t > 0.5);
+  // From below-right, the corner, the vertical gap closing last: bottom side of the target.
+  assert.deepEqual([contactEnds(box(470, 100), box(470, 70), target).from.side, contactEnds(box(470, 100), box(470, 70), target).to.side], ["top", "bottom"]);
+  // From the right: left side to right side.
+  assert.deepEqual([contactEnds(box(500, 10), box(470, 10), target).from.side, contactEnds(box(500, 10), box(470, 10), target).to.side], ["left", "right"]);
+});

@@ -116,3 +116,37 @@ export function nearestAnchor(r: Rect, p: { x: number; y: number }): Anchor {
   const t = side === "top" || side === "bottom" ? (p.x - r.x) / r.width : (p.y - r.y) / r.height;
   return { side, t: clamp(t) };
 }
+
+/**
+ * Connect mode: where an arrow between a dragged box and the box it ran into attaches, on the sides
+ * that touched first and at the middle of where they touched. `prev` is the dragged box one move
+ * before it touched (null if it already lay on the other box when the drag began); `cur` is where it
+ * touched. `from` is on the dragged box, `to` on the other.
+ */
+export function contactEnds(prev: Rect | null, cur: Rect, target: Rect): { from: Anchor; to: Anchor } {
+  const t = (v: number) => Math.round(Math.min(0.95, Math.max(0.05, v)) * 1000) / 1000;
+  const cx = (r: Rect) => r.x + r.width / 2;
+  const cy = (r: Rect) => r.y + r.height / 2;
+  let horizontal: boolean;
+  const p = prev ?? cur;
+  const gapX = Math.max(target.x - (p.x + p.width), p.x - (target.x + target.width));
+  const gapY = Math.max(target.y - (p.y + p.height), p.y - (target.y + target.height));
+  if (prev && (gapX > 0 || gapY > 0)) horizontal = gapX >= gapY; // the gap that closed last is the side that touched
+  else horizontal = Math.abs(cx(cur) - cx(target)) / (cur.width + target.width) >= Math.abs(cy(cur) - cy(target)) / (cur.height + target.height);
+  if (horizontal) {
+    const lo = Math.max(cur.y, target.y), hi = Math.min(cur.y + cur.height, target.y + target.height);
+    const mid = lo <= hi ? (lo + hi) / 2 : (cy(cur) + cy(target)) / 2;
+    const leftOf = cx(cur) < cx(target);
+    return {
+      from: { side: leftOf ? "right" : "left", t: t((mid - cur.y) / cur.height) },
+      to: { side: leftOf ? "left" : "right", t: t((mid - target.y) / target.height) },
+    };
+  }
+  const lo = Math.max(cur.x, target.x), hi = Math.min(cur.x + cur.width, target.x + target.width);
+  const mid = lo <= hi ? (lo + hi) / 2 : (cx(cur) + cx(target)) / 2;
+  const above = cy(cur) < cy(target);
+  return {
+    from: { side: above ? "bottom" : "top", t: t((mid - cur.x) / cur.width) },
+    to: { side: above ? "top" : "bottom", t: t((mid - target.x) / target.width) },
+  };
+}

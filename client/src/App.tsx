@@ -20,7 +20,7 @@ import {
   type OnConnectEnd,
 } from "@xyflow/react";
 import { DIAGRAM_TYPES, awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type DiagramType, type EdgeEnds, type EdgeEndsPatch, type NodeShape } from "../../server/types.ts";
-import { autoSides, resolveAnchors } from "./anchors.ts";
+import { autoSides, contactEnds, resolveAnchors, type Rect } from "./anchors.ts";
 import {
   ConflictError,
   connectSocket,
@@ -189,6 +189,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   /** Automatic arrow sides of the arrows on the dragged steps, as last drawn (redrawn when they change). */
   const dragSides = useRef("");
   /** Connect mode, during a drag: the step under the pointer, pending bumps, the arrow last touched. */
+  /** Connect mode: the dragged box one move ago, and per box it ran into, the sides that touched first. */
+  const contact = useRef<{ prev: Rect | null; ends: Map<string, { from: Anchor; to: Anchor }> }>({ prev: null, ends: new Map() });
   const bump = useRef<{ over: string | null | undefined; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
   const reversedEdges = useRef(new Map<string, string>());
@@ -879,6 +881,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     // Whatever is under the pointer when the drag starts (a box lying under the dragged one) is not a
     // bump: only coming over a box during the drag connects.
     bump.current.over = undefined;
+    contact.current = { prev: null, ends: new Map() };
     dragSides.current = "";
     setNodeDrag(true);
   }, []);
@@ -1011,7 +1014,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
    * Bumps run one after another, each on the state the previous one left.
    */
   const bumpInto = useCallback(
-    (from: string, target: string) => {
+    (from: string, target: string, touched?: { from: Anchor; to: Anchor }) => {
       const b = bump.current;
       b.bumped = true;
       b.queue = b.queue.then(async () => {
@@ -1031,6 +1034,15 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         }
         const res = await send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]);
         b.edge = res?.createdEdgeIds?.[0] ?? null;
+        // The new arrow runs between the sides that touched first, in the same undo step.
+        const id = b.edge;
+        if (id && touched && viewingRef.current === null) {
+          anchors.current[id] = touched;
+          unsentAnchors.current.add(id);
+          await postLayout({}, { [id]: touched }, undefined, true)
+            .catch(() => undefined)
+            .finally(() => unsentAnchors.current.delete(id));
+        }
         say("Connected ");
       });
     },
@@ -1059,14 +1071,29 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       }
       const hit = connectHit(event, dragged);
       setConnectTarget(hit);
+      // Which sides touch first, for each box the dragged one runs into.
+      const c = contact.current;
+      if (connectMode && dragged.length === 1) {
+        const cur = nodeRect(dragged[0]);
+        for (const n of rf.getNodes()) {
+          if (n.id === dragged[0].id || isDecoration(n.id)) continue;
+          const r = nodeRect(n);
+          const on = (a: Rect) => a.x < r.x + r.width && a.x + a.width > r.x && a.y < r.y + r.height && a.y + a.height > r.y;
+          if (on(cur) && (!c.prev || !on(c.prev))) c.ends.set(n.id, contactEnds(c.prev, cur, r));
+        }
+        c.prev = cur;
+      }
       const b = bump.current;
       if (b.over === undefined) b.over = hit;
       else if (hit !== b.over) {
         b.over = hit;
-        if (hit) bumpInto(dragged[0].id, hit);
+        if (hit) {
+          const r = rf.getNode(hit);
+          bumpInto(dragged[0].id, hit, c.ends.get(hit) ?? (r ? contactEnds(null, nodeRect(dragged[0]), nodeRect(r)) : undefined));
+        }
       }
     },
-    [bumpInto, connectHit, rf],
+    [bumpInto, connectHit, connectMode, rf],
   );
 
   const onNodeDragStop = useCallback(
