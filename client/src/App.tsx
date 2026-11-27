@@ -1599,7 +1599,13 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               onNodeDragStart={onNodeDragStart}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDragStop}
-              onEdgeDoubleClick={(_, e) => setEditingId(e.id)}
+              onEdgeDoubleClick={(ev, e) => !ev.altKey && setEditingId(e.id)}
+              onEdgeClick={(ev, e) => {
+                // Alt-click (Option-click): next direction step without selecting the arrow first.
+                if (!ev.altKey || compare) return;
+                ev.preventDefault();
+                cycleDirection([e.id]);
+              }}
               onPaneClick={() => setActiveMark(null)}
               deleteKeyCode={editingId ? null : ["Backspace", "Delete"]}
               multiSelectionKeyCode={["Meta", "Control", "Shift"]}
@@ -1973,7 +1979,7 @@ function ContextHint({
   else if (edges === 1 && !nodes) hint = "Enter edit label · R direction · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
   else if (nodes || edges) hint = `${nodes + edges} selected · drag any selected node to move them together · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
-  else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · ? shortcuts";
+  else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · Alt-click an arrow: direction · ? shortcuts";
   return <div className="context-hint">{hint}</div>;
 }
 
@@ -2106,6 +2112,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Drag from a handle", "Connect; drop on empty canvas to create a connected step"],
   ["C", "Connect mode on / off: drop a step onto another to connect them (the dropped step stays put); drop again to change the arrow's direction"],
   ["R or ⇄", "Selected arrow: reverse → arrowheads at both ends → as it was"],
+  ["Alt-click an arrow", "The same direction step, without selecting it first (Option-click on a Mac)"],
   ["M", "Mark the selection (then type the note)"],
   ["Drag on canvas", "Box-select (touching counts)"],
   ["Shift / Ctrl-click", "Add to selection"],

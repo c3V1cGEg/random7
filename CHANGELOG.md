@@ -7,7 +7,8 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ### Arrow direction in one click, and connect mode
 
-Select an arrow and press `R`, or click ⇄ on the floating bar. Each press goes one step:
+Alt-click (Option-click on a Mac) an arrow, or select it and press `R` or click ⇄ on the floating
+bar. Each one goes one step:
 reversed → arrowheads at both ends → back as it was. Two-way arrows are Mermaid `<-->`
 (`app e8@<--> cache`), which agents can now read and write too (`both` on `add_edge` and
 `update_edge`). State diagrams only reverse, since a transition goes one way. Reversing an arrow
