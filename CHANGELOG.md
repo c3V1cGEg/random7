@@ -5,6 +5,25 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Arrows that sit where you expect
+
+A pass over connecting and arrow handling by hand:
+
+- Steps side by side in a row are joined side to side with a straight arrow, not bottom to top with a
+  loop. Arrows sharing a side spread out in the order of the steps they lead to, so they don't cross.
+- Arrows turn to the facing sides live while you drag a step, not only after you drop it.
+- The blue end you drag sits exactly under the pointer (it used to drift away from it, further the
+  further it was from the canvas corner). Dropping an end just outside its box puts it on the nearest
+  side, and a flat box's left or right side counts as nearest when you drop beside it.
+- Connection handles show only on hover; they no longer clutter every box, the step being dragged or
+  connect mode. The floating bar hides while you drag a step.
+- Connect mode tells you what each bump did ("Connected Customer → Payment", then "Customer ↔ Payment"
+  and so on), and the new arrow is drawn correctly once the dragged step is back in its place.
+- Reversing an arrow between steps in a row keeps automatic ends, so it still follows when they move.
+- **Tidy** and switching Top-down / Left-right put hand-placed and reversed ends back to automatic, so
+  no leftover loops; one undo brings them back. The activity list says "turned edge e4 to done →
+  ship" for a direction change.
+
 ### Zoom with the mouse alone
 
 Hold the left mouse button and turn the wheel to zoom in and out around the pointer; the wheel on its

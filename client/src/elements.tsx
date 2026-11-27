@@ -599,6 +599,8 @@ export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<Canv
                     if (p.x < x - 14 || p.x > x + w + 14 || p.y < y - 14 || p.y > y + h + 14) continue;
                     if (!hit || w * h < hit.rect.width * hit.rect.height) hit = { id: n.id, rect: { x, y, width: w, height: h } };
                   }
+                  // Not over any node: the end moves along its own node to the nearest point of its border.
+                  if (!hit && (which === "from" ? src : tgt)) hit = { id: nodeId, rect: (which === "from" ? src : tgt)!.rect };
                   if (hit) moveEdgeEnd(id, which, hit.id, nearestAnchor(hit.rect, p));
                 }}
                 onPointerCancel={() => setDrag(null)}

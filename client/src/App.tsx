@@ -20,7 +20,7 @@ import {
   type OnConnectEnd,
 } from "@xyflow/react";
 import { DIAGRAM_TYPES, awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type DiagramType, type EdgeEnds, type EdgeEndsPatch, type NodeShape } from "../../server/types.ts";
-import { resolveAnchors } from "./anchors.ts";
+import { autoSides, resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
   connectSocket,
@@ -184,6 +184,10 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const [connectMode, setConnectMode] = useState(false);
   const [connectTarget, setConnectTarget] = useState<string | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
+  /** A step is being dragged: the floating bar hides so it neither trails the step nor covers the drop. */
+  const [nodeDrag, setNodeDrag] = useState(false);
+  /** Automatic arrow sides of the arrows on the dragged steps, as last drawn (redrawn when they change). */
+  const dragSides = useRef("");
   /** Connect mode, during a drag: the step under the pointer, pending bumps, the arrow last touched. */
   const bump = useRef<{ over: string | null; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
@@ -281,11 +285,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
    * names the undo step for the user's own moves; automatic placement is not recorded, and while an
    * earlier revision is previewed it stays local (only a real edit continues from that revision).
    */
-  const shareLayout = useCallback((map: Record<string, XY>, record?: string) => {
-    if (!Object.keys(map).length) return;
+  const shareLayout = useCallback((map: Record<string, XY>, record?: string, ends: Record<string, EdgeEndsPatch> = {}) => {
+    if (!Object.keys(map).length && !Object.keys(ends).length) return;
     if (viewingRef.current !== null && (!record || comparingRef.current)) return;
     Object.assign(unsentLayout.current, map);
-    postLayout(map, {}, record)
+    postLayout(map, ends, record)
       .catch(() => undefined)
       .finally(() => {
         for (const [id, p] of Object.entries(map)) if (unsentLayout.current[id] === p) delete unsentLayout.current[id];
@@ -302,7 +306,15 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       Object.entries(dagreLayout(s.nodes, s.edges, s.direction, sizeOf)).map(([id, p]) => [id, { ...positions.current[id], ...p }]),
     );
     Object.assign(positions.current, laid);
-    shareLayout(laid, record && Object.keys(laid).some((id) => !samePlace(before[id], laid[id])) ? "Tidied the layout" : undefined);
+    // The user's own Tidy also puts hand-placed arrow ends back to automatic: after every box has moved,
+    // ends pinned for the old places would make loops. Undo brings them back with the positions.
+    const reset: Record<string, EdgeEndsPatch> = {};
+    if (record && viewingRef.current === null) {
+      for (const id of Object.keys(anchors.current)) reset[id] = { from: null, to: null };
+      anchors.current = {};
+    }
+    const moved = Object.keys(laid).some((id) => !samePlace(before[id], laid[id])) || Object.keys(reset).length > 0;
+    shareLayout(laid, record && moved ? "Tidied the layout" : undefined, reset);
     setNodes((nds) => nds.map((n) => place(n, positions.current[n.id])));
     setEdgeVersion((v) => v + 1);
     if (fitMode === "always" || !inView(s.nodes.map((n) => ({ ...positions.current[n.id], ...sizeOf(n) })))) setTimeout(() => fit(), 30);
@@ -506,13 +518,13 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         };
       });
     });
-    const center = (id: string) => {
+    const rect = (id: string) => {
       const p = positions.current[id];
       const shape = state.nodes.find((n) => n.id === id)?.shape;
       const size = sizes.current[id] ?? (shape ? DEFAULT_SIZE[shape] : undefined);
-      return p && size ? { x: p.x + size.width / 2, y: p.y + size.height / 2 } : undefined;
+      return p && size ? { x: p.x, y: p.y, width: size.width, height: size.height } : undefined;
     };
-    const ends = resolveAnchors(state.edges, state.direction, anchors.current, center);
+    const ends = resolveAnchors(state.edges, state.direction, anchors.current, rect);
     setEdges((prev) => {
       const byId = new Map(prev.map((e) => [e.id, e]));
       return state.edges.map((e) => ({
@@ -862,6 +874,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     dragStart.current = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
     dragged.forEach((n) => dragging.current.add(n.id));
     bump.current.edge = null;
+    dragSides.current = "";
+    setNodeDrag(true);
   }, []);
 
   /**
@@ -900,6 +914,14 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           const from = at(drawn?.to ?? anchors.current[id]?.to);
           const to = at(drawn?.from ?? anchors.current[id]?.from);
           ends = from || to ? { ...(from ? { from } : {}), ...(to ? { to } : {}) } : null;
+          // Automatic ends that would land on the same sides anyway (boxes side by side) stay automatic,
+          // so the arrow keeps following its boxes when they move later.
+          const rect = (nid: string) => {
+            const n = rf.getNode(nid);
+            return n ? nodeRect(n) : undefined;
+          };
+          const auto = autoSides(s.direction, rect(e.to), rect(e.from));
+          if (!anchors.current[id] && from?.side === auto.from && to?.side === auto.to) ends = null;
         }
         was[id] = anchors.current[id];
         if (ends) anchors.current[id] = ends;
@@ -989,20 +1011,47 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       b.bumped = true;
       b.queue = b.queue.then(async () => {
         const existing = stateRef.current?.edges.findLast((e) => (e.from === from && e.to === target) || (e.from === target && e.to === from));
+        // The dragged step covers the arrow, so each bump says what it did.
+        const say = (prefix: string) => {
+          const s = stateRef.current;
+          const e = s?.edges.find((x) => x.id === b.edge);
+          const name = (id: string) => s?.nodes.find((n) => n.id === id)?.label || id;
+          if (e) showToast(`${prefix}${name(e.from)} ${e.both ? "↔" : "→"} ${name(e.to)}`);
+        };
         if (existing) {
           b.edge = existing.id;
           await cycleDirection([existing.id]);
+          say("");
           return;
         }
         const res = await send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]);
         b.edge = res?.createdEdgeIds?.[0] ?? null;
+        say("Connected ");
       });
     },
-    [autoEdgeLabel, cycleDirection, send],
+    [autoEdgeLabel, cycleDirection, send, showToast],
   );
 
   const onNodeDrag = useCallback(
     (event: MouseEvent | TouchEvent, _: unknown, dragged: CanvasNode[]) => {
+      // Arrows on the dragged steps turn to the sides facing their other step as it moves.
+      const s = stateRef.current;
+      if (s && s.type !== "sequence") {
+        const ids = new Set(dragged.map((n) => n.id));
+        const rect = (id: string) => {
+          const n = rf.getNode(id);
+          return n ? nodeRect(n) : undefined;
+        };
+        const sig = s.edges
+          .filter((e) => ids.has(e.from) || ids.has(e.to))
+          .map((e) => {
+            const x = autoSides(s.direction, rect(e.from), rect(e.to));
+            return `${e.id}:${x.from}${x.to}`;
+          })
+          .join(",");
+        if (dragSides.current && sig !== dragSides.current) setEdgeVersion((v) => v + 1);
+        dragSides.current = sig;
+      }
       const hit = connectHit(event, dragged);
       setConnectTarget(hit);
       const b = bump.current;
@@ -1011,7 +1060,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         if (hit) bumpInto(dragged[0].id, hit);
       }
     },
-    [bumpInto, connectHit],
+    [bumpInto, connectHit, rf],
   );
 
   const onNodeDragStop = useCallback(
@@ -1019,6 +1068,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const before = dragStart.current;
       const b = bump.current;
       setConnectTarget(null);
+      setNodeDrag(false);
       b.over = null;
       if (b.bumped) {
         // Connect mode: the dragged step goes back where it was; the arrow it last touched is selected.
@@ -1030,7 +1080,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           positions.current[from] = home;
           setNodes((nds) => nds.map((n) => (n.id === from ? place(n, home) : n)));
         }
-        void b.queue.then(() => b.edge && selectOnly([b.edge]));
+        // Arrow sides follow where the boxes are, now the step is back home.
+        void b.queue.then(() => {
+          setEdgeVersion((v) => v + 1);
+          if (b.edge) selectOnly([b.edge]);
+        });
         return;
       }
       const after = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
@@ -1368,7 +1422,14 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const changeDirection = useCallback(async () => {
     const s = stateRef.current;
     if (!s) return;
-    await send([{ op: "set_direction", direction: s.direction === "TD" ? "LR" : "TD" }]);
+    const reset: Record<string, EdgeEndsPatch> = Object.fromEntries(Object.keys(anchors.current).map((id) => [id, { from: null, to: null }]));
+    const ok = await send([{ op: "set_direction", direction: s.direction === "TD" ? "LR" : "TD" }]);
+    // Hand-placed ends belong to the old direction's sides: back to automatic, in the same undo step.
+    if (ok && Object.keys(reset).length && viewingRef.current === null) {
+      anchors.current = {};
+      setEdgeVersion((v) => v + 1);
+      await postLayout({}, reset, undefined, true).catch(() => undefined);
+    }
   }, [send]);
 
 
@@ -1760,7 +1821,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                   onDelete={() => void rf.deleteElements({ nodes: selectedNodes.map((n) => ({ id: n.id })) })}
                 />
               )}
-              {!editingId && !isSeq && (
+              {!editingId && !isSeq && !nodeDrag && (
                 <SelectionBar
                   allNodes={nodes}
                   nodes={selectedNodes}
