@@ -179,9 +179,9 @@ export function describeOp(op: { op: string } & Record<string, unknown>): string
     case "remove_node":
       return `removed ${op.id}`;
     case "add_edge":
-      return `connected ${op.from} → ${op.to}${op.label ? ` ${q(op.label)}` : ""} (${op.id})${st(op.status)}`;
+      return `connected ${op.from} ${op.both ? "↔" : "→"} ${op.to}${op.label ? ` ${q(op.label)}` : ""} (${op.id})${st(op.status)}`;
     case "update_edge":
-      return `changed edge ${op.id}${op.from || op.to ? " endpoints" : ""}${op.label !== undefined ? ` label ${op.label === null ? "cleared" : q(op.label)}` : ""}${st(op.status)}`;
+      return `changed edge ${op.id}${op.from || op.to ? " endpoints" : ""}${op.both !== undefined ? (op.both ? " to two-way" : " to one-way") : ""}${op.label !== undefined ? ` label ${op.label === null ? "cleared" : q(op.label)}` : ""}${st(op.status)}`;
     case "remove_edge":
       return `removed edge ${op.id}`;
     case "add_annotation":

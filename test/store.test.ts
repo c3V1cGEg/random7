@@ -316,3 +316,34 @@ test("status patches, accept_changes and undo", () => {
   s.applyPatch(s.revision, [{ op: "update_edge", id: "e2", status: null }], "user");
   assert.doesNotMatch(s.snapshot().diagram, /class e2/);
 });
+
+test("two-way edges: <--> parses, round-trips, is set and cleared by update_edge, and undoes", () => {
+  const { graph } = parseMermaid("flowchart LR\n app e1@<--> cache\n app <-->|sync| db\n db --> app");
+  assert.deepEqual(graph.edges.map((e) => [e.from, e.to, !!e.both]), [["app", "cache", true], ["app", "db", true], ["db", "app", false]]);
+  assert.match(toMermaid(graph), /app e1@<--> cache/);
+  assert.deepEqual(parseMermaid(toMermaid(graph)).graph, graph);
+
+  const s = demo();
+  // The editor's direction cycle: reverse, then both ends, then back as it was.
+  s.applyPatch(1, [{ op: "update_edge", id: "e1", from: "n2", to: "n1" }], "user");
+  assert.match(s.snapshot().diagram, /n2 e1@--> n1/);
+  s.applyPatch(2, [{ op: "update_edge", id: "e1", both: true }], "user");
+  assert.match(s.snapshot().diagram, /n2 e1@<--> n1/);
+  s.applyPatch(3, [{ op: "update_edge", id: "e1", from: "n1", to: "n2", both: false }], "user");
+  assert.match(s.snapshot().diagram, /n1 e1@--> n2/);
+  s.undo();
+  assert.match(s.snapshot().diagram, /n2 e1@<--> n1/);
+  assert.equal(s.browserState().edges.find((e) => e.id === "e1")?.both, true);
+
+  const added = s.applyPatch(s.revision, [{ op: "add_edge", from: "n4", to: "n5", both: true }], "agent");
+  assert.match(s.snapshot().diagram, new RegExp(`n4 ${added.createdEdgeIds![0]}@<--> n5`));
+});
+
+test("state diagrams have no two-way transitions", () => {
+  const s = new CanvasStore();
+  s.replaceDiagram(0, "stateDiagram-v2\n [*] --> Draft\n Draft --> Paid", "clear", "agent");
+  const e = s.browserState().edges.find((x) => x.from === "Draft")!;
+  assert.equal(code(() => s.applyPatch(1, [{ op: "update_edge", id: e.id, both: true }], "user")), "invalid_transition");
+  s.applyPatch(1, [{ op: "update_edge", id: e.id, from: "Paid", to: "Draft" }], "user");
+  assert.match(s.snapshot().diagram, /Paid --> Draft/);
+});

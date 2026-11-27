@@ -147,6 +147,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
     to: id,
     label: label.optional(),
     status: status.optional(),
+    both: z.boolean().optional().describe("Flowcharts: arrowheads at both ends (Mermaid <-->)"),
   }),
   z.object({
     op: z.literal("update_edge"),
@@ -155,6 +156,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
     to: id.optional(),
     label: label.nullable().optional().describe("null or empty string clears the label"),
     status: statusUpdate,
+    both: z.boolean().optional().describe("Flowcharts: true = arrowheads at both ends (Mermaid <-->), false = one arrowhead at `to`"),
   }),
   z.object({ op: z.literal("remove_edge"), id }),
   z.object({

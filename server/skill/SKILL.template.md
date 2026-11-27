@@ -112,6 +112,7 @@ One meaning per shape, identical at every level:
 | Data store | `db[("Orders database")]` | Persistent store (database, queue table, file), only when technically relevant |
 | Edge | `n1 e1@--> d1` | Ordered flow |
 | Labeled edge | `d1 e2@-->|"Yes"| n2` | One outcome of a decision |
+| Two-way edge | `app e8@<--> cache` | Arrowheads at both ends: a two-way exchange or sync, not a sequence |
 
 Rules:
 

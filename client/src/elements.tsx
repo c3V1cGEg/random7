@@ -502,7 +502,7 @@ function useNodeRect(id: string): { rect: Rect; shape?: NodeShape } | null {
 }
 
 export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<CanvasEdge>) {
-  const { id, source, target, data, selected, markerEnd } = props;
+  const { id, source, target, data, selected, markerEnd, markerStart } = props;
   const { editingId, setEditingId, relabelEdge, touched, moveEdgeEnd } = useContext(ActionsContext);
   const rf = useReactFlow();
   const store = useStoreApi<CanvasNode, CanvasEdge>();
@@ -567,7 +567,7 @@ export const CanvasEdgeView = memo(function CanvasEdgeView(props: EdgeProps<Canv
     .join(" ");
   return (
     <>
-      <BaseEdge id={id} path={path} markerEnd={markerEnd} interactionWidth={20} className={cls} />
+      <BaseEdge id={id} path={path} markerStart={markerStart} markerEnd={markerEnd} interactionWidth={20} className={cls} />
       {selected && !editing && (
         <EdgeLabelRenderer>
           {(["from", "to"] as const).map((which) => {

@@ -61,6 +61,8 @@ export interface GraphEdge {
   to: string;
   label?: string;
   status?: ChangeStatus;
+  /** Arrowheads at both ends (Mermaid `<-->`), e.g. a two-way sync. Flowcharts only. */
+  both?: boolean;
 }
 
 export interface Graph {

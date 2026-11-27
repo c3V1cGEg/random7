@@ -310,7 +310,8 @@ export function buildVsdx(diagram: ExportDiagram): Uint8Array<ArrayBuffer> {
       cell("ObjType", 2) +
       cell("LineColor", status?.line ?? EDGE) + cell("LineWeight", (status ? 2.4 : 1.6) / PX) +
       // Removed transitions, and those possible from every state ("any state"), are dashed as on the canvas.
-      cell("LinePattern", e.status === "removed" || e.from === "any" ? 2 : 1) + cell("EndArrow", 13) + cell("EndArrowSize", 2);
+      cell("LinePattern", e.status === "removed" || e.from === "any" ? 2 : 1) + cell("EndArrow", 13) + cell("EndArrowSize", 2) +
+      (e.both ? cell("BeginArrow", 13) + cell("BeginArrowSize", 2) : "");
     // The label: a box sized to its text, centred at (x, y) in the connector's own frame, turned by `angle` to read horizontally.
     const labelAt = (x: number, y: number, angle: number) =>
       label

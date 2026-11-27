@@ -82,7 +82,7 @@ export function toMermaid(graph: Graph): string {
   }
   for (const e of graph.edges) {
     const label = e.label ? `|"${encodeLabel(e.label)}"|` : "";
-    lines.push(`    ${e.from} ${e.id}@-->${label} ${e.to}`);
+    lines.push(`    ${e.from} ${e.id}@${e.both ? "<-->" : "-->"}${label} ${e.to}`);
   }
   // Edge classes need a separate statement; nodes carry theirs inline (:::status).
   const used = new Set<ChangeStatus>();
@@ -181,7 +181,7 @@ export function parseMermaid(source: string): ParseResult {
   const declared = new Set<string>();
   const edges: GraphEdge[] = [];
   const edgeIds = new Set<string>();
-  const pendingEdges: Array<{ id?: string; from: string; to: string; label?: string; lineNo: number }> = [];
+  const pendingEdges: Array<{ id?: string; from: string; to: string; label?: string; both: boolean; lineNo: number }> = [];
   const nodeStatus = new Map<string, ChangeStatus>();
   const classStatements: Array<{ ids: string[]; status: ChangeStatus; lineNo: number }> = [];
 
@@ -230,11 +230,11 @@ export function parseMermaid(source: string): ParseResult {
       return;
     }
 
-    // Edge: [edgeId@]-->[|label|] target
-    const em = /^(?:([A-Za-z][A-Za-z0-9_]*)@)?-->\s*/.exec(rest);
+    // Edge: [edgeId@]-->[|label|] target, or <--> for arrowheads at both ends
+    const em = /^(?:([A-Za-z][A-Za-z0-9_]*)@)?(<?-->)\s*/.exec(rest);
     if (!em) {
-      if (/^(-\.->|==>|---|-\.-|===|--[ox]|<-->|~~~|--\s)/.test(rest)) {
-        throw lineError(lineNo, `only "-->" edges are supported (optionally "eN@-->" and "-->|label|")`);
+      if (/^(-\.->|==>|---|-\.-|===|--[ox]|~~~|--\s)/.test(rest)) {
+        throw lineError(lineNo, `only "-->" and "<-->" edges are supported (optionally "eN@-->" and "-->|label|")`);
       }
       throw lineError(lineNo, `could not parse "${truncate(rest)}"`);
     }
@@ -255,7 +255,7 @@ export function parseMermaid(source: string): ParseResult {
     }
     declare(left.ref, lineNo);
     declare(right.ref, lineNo);
-    pendingEdges.push({ id: em[1], from: left.ref.id, to: right.ref.id, label, lineNo });
+    pendingEdges.push({ id: em[1], from: left.ref.id, to: right.ref.id, label, both: em[2] === "<-->", lineNo });
   });
 
   if (direction === undefined) throw new CanvasError("mermaid_syntax", `diagram must start with "flowchart TD" or "flowchart LR"`);
@@ -278,7 +278,7 @@ export function parseMermaid(source: string): ParseResult {
       edgeIds.add(id);
       generatedEdgeIds.push(id);
     }
-    edges.push({ id, from: p.from, to: p.to, ...(p.label ? { label: p.label } : {}) });
+    edges.push({ id, from: p.from, to: p.to, ...(p.label ? { label: p.label } : {}), ...(p.both ? { both: true } : {}) });
   }
 
   for (const [id, status] of nodeStatus) nodes.get(id)!.status = status;

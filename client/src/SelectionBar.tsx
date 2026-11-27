@@ -18,6 +18,8 @@ export interface SelectionBarProps {
   onAddNext(): void;
   onEdit(): void;
   onEdgeLabel(label: string): void;
+  /** Cycles the selected arrows: reversed → both ends → as they were. */
+  onDirection(): void;
   onDelete(): void;
   /** State diagrams offer state shapes instead of flowchart ones. */
   diagram?: "flowchart" | "state";
@@ -167,6 +169,17 @@ export function SelectionBar(p: SelectionBarProps) {
             ))}
           <button className="tool wide" title="Edit label (Enter)" onClick={p.onEdit}>
             ✎ Label
+          </button>
+        </span>
+      )}
+      {!p.nodes.length && p.edges.length > 0 && (
+        <span className="group">
+          <button
+            className="tool"
+            title={p.diagram === "state" ? "Reverse the transition (R)" : "Arrow direction: reverse → both ends → as it was (R)"}
+            onClick={p.onDirection}
+          >
+            ⇄
           </button>
         </span>
       )}

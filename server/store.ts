@@ -1347,6 +1347,7 @@ function applyOp(
       const label = op.label !== undefined ? checkLabel(op.label) : "";
       if (label) edge.label = label;
       if (op.status) edge.status = op.status;
+      if (op.both) edge.both = checkBoth(m);
       m.edges.set(id, edge);
       created.edges.push(id);
       log.push({ op: "add_edge", ...edge });
@@ -1366,6 +1367,11 @@ function applyOp(
         entry.label = label || null;
       }
       if (op.status !== undefined) setStatus(next, entry, op.status);
+      if (op.both !== undefined) {
+        if (op.both) next.both = checkBoth(m);
+        else delete next.both;
+        entry.both = op.both;
+      }
       m.edges.set(op.id, next);
       log.push(entry);
       return;
@@ -1591,6 +1597,12 @@ function checkShape(m: Model, shape: GraphNode["shape"]): GraphNode["shape"] {
 }
 
 /** Nothing leads into the initial state, and nothing leaves the final one. */
+/** Two-way arrows are a flowchart notion: a state diagram's transitions each go one way. */
+function checkBoth(m: Model): true {
+  if (m.type === "state") throw new CanvasError("invalid_transition", "a transition goes one way; draw two transitions for a way back");
+  return true;
+}
+
 function checkTransition(m: Model, from: string, to: string) {
   if (m.type !== "state") return;
   if (to === INITIAL_ID) throw new CanvasError("invalid_transition", "no transition can lead into the initial state");

@@ -180,6 +180,11 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const [missingSession, setMissingSession] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Connect mode: dropping a step onto another connects them (the dropped step returns to its place). */
+  const [connectMode, setConnectMode] = useState(false);
+  const [connectTarget, setConnectTarget] = useState<string | null>(null);
+  /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
+  const reversedEdges = useRef(new Map<string, string>());
   /** Sequence diagrams: keep lane names visible at the left edge while scrolling (remembered per browser). */
   const [freezeLanes, setFreezeLanes] = useState(() => {
     try {
@@ -513,6 +518,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         type: "canvas",
         ...(select ? { selected: select.has(e.id) } : {}),
         markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, ...(e.status ? { color: STATUS_COLOR[e.status] } : {}) },
+        markerStart: e.both
+          ? { type: MarkerType.ArrowClosed, width: 18, height: 18, orient: "auto-start-reverse", ...(e.status ? { color: STATUS_COLOR[e.status] } : {}) }
+          : undefined,
         data: { label: e.label, marks: edgeMarks.get(e.id) ?? [], status: e.status, direction: state.direction, fromAny: e.from === "any", ...ends[e.id] },
       }));
     });
@@ -850,9 +858,53 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     dragged.forEach((n) => dragging.current.add(n.id));
   }, []);
 
+  /** Connect mode: the step under the pointer while one step is dragged, other than the dragged one. */
+  const connectHit = useCallback(
+    (event: MouseEvent | TouchEvent, dragged: CanvasNode[]): string | null => {
+      if (!connectMode || dragged.length !== 1 || stateRef.current?.type === "sequence") return null;
+      const pt = "changedTouches" in event ? event.changedTouches[0] : event;
+      if (!pt) return null;
+      const p = rf.screenToFlowPosition({ x: pt.clientX, y: pt.clientY });
+      const hit = rf
+        .getNodes()
+        .filter((n) => n.id !== dragged[0].id && !isDecoration(n.id))
+        .map((n) => ({ id: n.id, r: nodeRect(n) }))
+        .filter(({ r }) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)
+        .at(-1);
+      return hit?.id ?? null;
+    },
+    [connectMode, rf],
+  );
+
+  const onNodeDrag = useCallback(
+    (event: MouseEvent | TouchEvent, _: unknown, dragged: CanvasNode[]) => setConnectTarget(connectHit(event, dragged)),
+    [connectHit],
+  );
+
   const onNodeDragStop = useCallback(
-    (_: unknown, __: unknown, dragged: CanvasNode[]) => {
+    (event: MouseEvent | TouchEvent, __: unknown, dragged: CanvasNode[]) => {
       const before = dragStart.current;
+      const target = connectHit(event, dragged);
+      setConnectTarget(null);
+      if (target) {
+        // Connect mode: the dropped step goes back where it was, and is connected to the one it landed on.
+        const from = dragged[0].id;
+        dragging.current.delete(from);
+        const home = before[from];
+        if (home) {
+          positions.current[from] = home;
+          setNodes((nds) => nds.map((n) => (n.id === from ? place(n, home) : n)));
+        }
+        if (stateRef.current?.edges.some((e) => (e.from === from && e.to === target) || (e.both && e.from === target && e.to === from))) {
+          showToast("These two are already connected");
+          return;
+        }
+        void send([{ op: "add_edge", from, to: target, ...autoEdgeLabel(from) }]).then((res) => {
+          const id = res?.createdEdgeIds?.[0];
+          if (id) selectOnly([id]);
+        });
+        return;
+      }
       const after = Object.fromEntries(dragged.map((n) => [n.id, { ...positions.current[n.id], ...n.position }]));
       dragged.forEach((n) => dragging.current.delete(n.id));
       if (dragged.some((n) => before[n.id] && (before[n.id].x !== n.position.x || before[n.id].y !== n.position.y))) {
@@ -860,7 +912,50 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         setEdgeVersion((v) => v + 1);
       }
     },
-    [movedText, shareLayout],
+    [autoEdgeLabel, connectHit, movedText, selectOnly, send, shareLayout, showToast],
+  );
+
+  // The step a dragged step would connect to in connect mode is highlighted.
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.some((n) => (n.id === connectTarget) !== !!n.className?.includes("connect-target"))
+        ? nds.map((n) => ({ ...n, className: n.id === connectTarget ? "connect-target" : undefined }))
+        : nds,
+    );
+  }, [connectTarget, nodes.length]);
+
+  /**
+   * One click per step: reversed → arrowheads at both ends → back as it was. State diagrams have no
+   * two-way transitions, so there it only reverses. A reversed edge loses ends placed by hand.
+   */
+  const cycleDirection = useCallback(
+    (ids: string[]) => {
+      const s = stateRef.current;
+      if (!s || s.type === "sequence") return;
+      const ops: Operation[] = [];
+      const clearAnchors: Record<string, { from: null; to: null }> = {};
+      for (const id of ids) {
+        const e = s.edges.find((x) => x.id === id);
+        if (!e) continue;
+        const key = `${e.from}>${e.to}`;
+        if (s.type === "flowchart" && !e.both && reversedEdges.current.get(id) === key) {
+          ops.push({ op: "update_edge", id, both: true });
+          reversedEdges.current.delete(id);
+          continue;
+        }
+        ops.push({ op: "update_edge", id, from: e.to, to: e.from, ...(e.both ? { both: false } : {}) });
+        if (e.both) reversedEdges.current.delete(id);
+        else reversedEdges.current.set(id, `${e.to}>${e.from}`);
+        if (anchors.current[id]) {
+          delete anchors.current[id];
+          clearAnchors[id] = { from: null, to: null };
+        }
+      }
+      if (!ops.length) return;
+      if (Object.keys(clearAnchors).length) void postLayout({}, clearAnchors).catch(() => undefined);
+      void send(ops);
+    },
+    [send],
   );
 
   /** Dragging a mark's bubble moves every element it wraps; `delta` null ends the drag (one undo step). */
@@ -1239,6 +1334,13 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           case "l":
           case "L":
             return autoLayout(true), true;
+          case "r":
+          case "R":
+            return selectedEdges.length ? (cycleDirection(selectedEdges.map((x) => x.id)), true) : false;
+          case "c":
+          case "C":
+            if (s?.type === "sequence") return false;
+            return setConnectMode((on) => !on), true;
           case "f":
           case "F":
             return fit(), true;
@@ -1248,6 +1350,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
           case "S":
             return showSidebar(!sidebarOpen), true;
           case "Escape":
+            setConnectMode(false);
             setHelpOpen(false);
             setActiveMark(null);
             selectOnly([]);
@@ -1297,7 +1400,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addAnyState, addNext, autoLayout, createMark, createNode, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, showSidebar, sidebarOpen, travel]);
+  }, [addAnyState, addNext, autoLayout, createMark, createNode, cycleDirection, edges, editingId, fit, nodes, pointerOrCenter, selectOnly, selectedEdges, selectedNodes, seq, showSidebar, sidebarOpen, travel]);
 
   // --- render ------------------------------------------------------------------
 
@@ -1410,6 +1513,14 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                   ✱ Any state <kbd>A</kbd>
                 </button>
               )}
+              <button
+                className={connectMode ? "on" : ""}
+                aria-pressed={connectMode}
+                onClick={() => setConnectMode((on) => !on)}
+                title={`Connect mode ${connectMode ? "on" : "off"}: drop a ${isState ? "state" : "step"} onto another to connect them (C, Esc leaves)`}
+              >
+                ⤳ Connect <kbd>C</kbd>
+              </button>
             </div>
           )}
           <div className="toolgroup">
@@ -1467,7 +1578,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
 
         <div className="main">
           <div
-            className="canvas-pane"
+            className={`canvas-pane${connectMode && !isSeq ? " connect-mode" : ""}`}
             onMouseMove={(e) => (pointer.current = { x: e.clientX, y: e.clientY })}
             onMouseLeave={() => (pointer.current = null)}
             onDoubleClick={onPaneDoubleClick}
@@ -1483,6 +1594,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
               onConnect={onConnect}
               onConnectEnd={onConnectEnd}
               onNodeDragStart={onNodeDragStart}
+              onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDragStop}
               onEdgeDoubleClick={(_, e) => setEditingId(e.id)}
               onPaneClick={() => setActiveMark(null)}
@@ -1568,6 +1680,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                     if (id && !fixedLabel(id)) setEditingId(id);
                   }}
                   onEdgeLabel={(label) => void send([{ op: "update_edge", id: selectedEdges[0].id, label }])}
+                  onDirection={() => cycleDirection(selectedEdges.map((e) => e.id))}
                   onDelete={() =>
                     void rf.deleteElements({ nodes: selectedNodes.map((n) => ({ id: n.id })), edges: selectedEdges.map((e) => ({ id: e.id })) })
                   }
@@ -1854,7 +1967,7 @@ function ContextHint({
   }
   if (editing) hint = "Enter save · Tab save & add next step · Esc cancel";
   else if (nodes === 1 && !edges) hint = `Enter rename · Tab add next ${stateDiagram ? "state" : "step"} · M mark · drag a handle to connect · Del delete`;
-  else if (edges === 1 && !nodes) hint = "Enter edit label · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
+  else if (edges === 1 && !nodes) hint = "Enter edit label · R direction · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
   else if (nodes || edges) hint = `${nodes + edges} selected · drag any selected node to move them together · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
   else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · ? shortcuts";
@@ -1988,6 +2101,8 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Shift+Enter", "While typing: add a detail line inside the step; start it with + / - / ~ for added / dropped / modified"],
   ["New / Changed / Removed", "Selection bar: colour the selection as part of a proposed change (click again to clear)"],
   ["Drag from a handle", "Connect; drop on empty canvas to create a connected step"],
+  ["C", "Connect mode on / off: drop a step onto another to connect them (the dropped step stays put)"],
+  ["R or ⇄", "Selected arrow: reverse → arrowheads at both ends → as it was"],
   ["M", "Mark the selection (then type the note)"],
   ["Drag on canvas", "Box-select (touching counts)"],
   ["Shift / Ctrl-click", "Add to selection"],

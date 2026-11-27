@@ -778,3 +778,13 @@ button.compare-go { background: var(--accent); color: #fff; border: 0; border-ra
 .preview-banner.compare button { border-color: #2f6fde66; }
 .preview-banner.compare button:hover { background: #e2ebfb; }
 .node.diff-moved { outline: 2px dashed #2f6fde; outline-offset: 4px; }
+
+/* Connect mode (C): drop a step onto another to connect them. */
+.canvas-pane.connect-mode .react-flow__node { cursor: copy; }
+.canvas-pane.connect-mode::after {
+  content: "Connect mode — drop a box onto another to connect them · C or Esc to leave";
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5; pointer-events: none;
+  padding: 4px 12px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 2px 8px #0002;
+}
+.react-flow__node.connect-target { outline: 3px solid var(--accent); outline-offset: 4px; border-radius: 8px; }

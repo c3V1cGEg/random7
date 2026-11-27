@@ -5,6 +5,22 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Arrow direction in one click, and connect mode
+
+Select an arrow and press `R`, or click ⇄ on the floating bar. Each press goes one step:
+reversed → arrowheads at both ends → back as it was. Two-way arrows are Mermaid `<-->`
+(`app e8@<--> cache`), which agents can now read and write too (`both` on `add_edge` and
+`update_edge`). State diagrams only reverse, since a transition goes one way. Reversing an arrow
+drops end points you placed by hand.
+
+**Connect mode** (`C`, or **⤳ Connect** in the toolbar) connects steps without aiming for a handle.
+Drag a step onto another: the target is outlined, and on release the arrow is drawn from the dragged
+step to the target. The dragged step goes back to where it was, and the new arrow is selected, so `R`
+turns it around straight away. Dropped on empty canvas, a step simply moves. A banner shows while the
+mode is on, and `C` or `Esc` leaves it. Visio export draws both arrowheads.
+
+![Connect mode on, with its banner; Order service and Payment joined by a two-way arrow, Payment to Ledger one way](docs/changelog/two-way-arrow-connect-mode.png)
+
 ### Run the canvas in Docker
 
 `docker compose -f docker/compose.yaml up -d --build` builds and starts the canvas server in a

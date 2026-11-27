@@ -94,12 +94,12 @@ function flowchartChanges(a: BrowserState, b: BrowserState): ElementChange[] {
   const edgeName = (e: GraphEdge) => {
     const s = b.nodes.some((n) => n.id === e.from) || !a.nodes.some((n) => n.id === e.from) ? b : a;
     const t = b.nodes.some((n) => n.id === e.to) || !a.nodes.some((n) => n.id === e.to) ? b : a;
-    return `${label(s, e.from)} → ${label(t, e.to)}${e.label ? ` "${short(e.label, 30)}"` : ""}`;
+    return `${label(s, e.from)} ${e.both ? "↔" : "→"} ${label(t, e.to)}${e.label ? ` "${short(e.label, 30)}"` : ""}`;
   };
   const edges = compare<GraphEdge>(
     a.edges,
     b.edges,
-    { ends: (e) => [e.from, e.to], text: (e) => e.label ?? "", status: (e) => e.status ?? null },
+    { ends: (e) => [e.from, e.to], arrow: (e) => !!e.both, text: (e) => e.label ?? "", status: (e) => e.status ?? null },
     (e) => ({ type: "edge", name: edgeName(e) }),
     (e) => e.label ?? "",
   );
