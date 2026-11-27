@@ -5,6 +5,12 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Zoom with the mouse alone
+
+Hold the left mouse button and turn the wheel to zoom in and out around the pointer; the wheel on its
+own still pans, and Ctrl+wheel still zooms. It works on empty canvas and while dragging a step, so
+you can zoom out mid-drag to carry a step further.
+
 ### Arrow direction in one click, and connect mode
 
 Alt-click (Option-click on a Mac) an arrow, or select it and press `R` or click ⇄ on the floating

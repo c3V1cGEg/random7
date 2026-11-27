@@ -183,6 +183,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   /** Connect mode: bumping a dragged step into another connects them (the dragged step returns to its place). */
   const [connectMode, setConnectMode] = useState(false);
   const [connectTarget, setConnectTarget] = useState<string | null>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
   /** Connect mode, during a drag: the step under the pointer, pending bumps, the arrow last touched. */
   const bump = useRef<{ over: string | null; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
@@ -925,6 +926,40 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     [rf, send],
   );
 
+  // Zoom with the mouse alone: turn the wheel while holding the left button (the wheel alone pans).
+  // Zooms around the pointer; works on empty canvas and while dragging a step.
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    let left = false;
+    const down = (e: PointerEvent) => e.button === 0 && (left = true);
+    const up = (e: PointerEvent) => e.button === 0 && (left = false);
+    const reset = () => (left = false);
+    const onWheel = (e: WheelEvent) => {
+      if (!(left || e.buttons & 1) || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const box = pane.querySelector(".react-flow")?.getBoundingClientRect();
+      if (!box) return;
+      const { x, y, zoom } = rf.getViewport();
+      const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      const next = Math.min(2, Math.max(0.2, zoom * Math.pow(2, -delta / 300)));
+      const px = e.clientX - box.left;
+      const py = e.clientY - box.top;
+      void rf.setViewport({ x: px - ((px - x) * next) / zoom, y: py - ((py - y) * next) / zoom, zoom: next });
+    };
+    pane.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    pane.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("blur", reset);
+    return () => {
+      pane.removeEventListener("wheel", onWheel, { capture: true });
+      pane.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("blur", reset);
+    };
+  }, [rf]);
+
   /** Connect mode: the step under the pointer while one step is dragged, other than the dragged one. */
   const connectHit = useCallback(
     (event: MouseEvent | TouchEvent, dragged: CanvasNode[]): string | null => {
@@ -1637,6 +1672,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
 
         <div className="main">
           <div
+            ref={paneRef}
             className={`canvas-pane${connectMode && !isSeq ? " connect-mode" : ""}`}
             onMouseMove={(e) => (pointer.current = { x: e.clientX, y: e.clientY })}
             onMouseLeave={() => (pointer.current = null)}
@@ -2035,7 +2071,7 @@ function ContextHint({
   else if (edges === 1 && !nodes) hint = "Enter edit label · R direction · M mark · drag an end along the border or onto another node · double-click an end: automatic · Del delete";
   else if (nodes || edges) hint = `${nodes + edges} selected · drag any selected node to move them together · M mark selection · Del delete`;
   else if (empty) hint = "Double-click to add a step · ? shortcuts";
-  else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll to zoom · double-click to add · Alt-click an arrow: direction · ? shortcuts";
+  else hint = "Drag to select · Space-drag or scroll to pan · Ctrl+scroll or left button + scroll to zoom · double-click to add · Alt-click an arrow: direction · ? shortcuts";
   return <div className="context-hint">{hint}</div>;
 }
 
@@ -2176,7 +2212,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Drag a mark's label", "Move every element the mark wraps (click it to open the note)"],
   ["Ctrl+A", "Select all"],
   ["Del / Backspace", "Delete selection"],
-  ["Space-drag, scroll", "Pan · Ctrl+scroll or pinch to zoom"],
+  ["Space-drag, scroll", "Pan · Ctrl+scroll, left button + scroll, or pinch to zoom"],
   ["Ctrl+Z / Ctrl+Shift+Z", "Undo / redo your own changes (incl. moves); never undoes the agent's"],
   ["Alt+N (Option+N)", "New session tab (Ctrl/Cmd+N too, where the browser does not keep it for a new window)"],
   ["L / F", "Tidy layout / fit to screen"],

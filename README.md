@@ -319,7 +319,7 @@ An agent (or you) can show a change to an existing flow on the canvas instead of
 | Connect quickly | `C` or **⤳ Connect** turns connect mode on: bump a step into another while dragging and they are connected at once. Without letting go, move out and back over it again: each further bump turns that arrow one step through the direction cycle below, like `R`. On release the dragged step goes back to its place and the arrow is selected. A drag that bumps nothing just moves the step. `C` or `Esc` leaves |
 | Arrow direction | Alt-click (Option-click) an arrow, or select it and press `R` or ⇄ on the floating bar: reversed → arrowheads at both ends (Mermaid `<-->`) → as it was. The arrow keeps its line; only the heads change. In state diagrams it only reverses; transitions go one way |
 | Rename | Double-click, `Enter` or `F2`, for nodes and edges. Decision branches get Yes/No automatically |
-| Select | Drag on the canvas (box), Shift/Ctrl-click, `Ctrl+A`. Pan with Space-drag or scroll; zoom with Ctrl+scroll |
+| Select | Drag on the canvas (box), Shift/Ctrl-click, `Ctrl+A`. Pan with Space-drag or scroll; zoom with Ctrl+scroll, or hold the left mouse button and scroll (mouse only) |
 | Move a group | Drag any selected node to move the whole selection, or drag a mark's label to move everything that mark wraps (one undo step) |
 | Mark | Select, then `M` or a kind chip on the floating bar, then type the note. Box-selected marks target nodes; the ring covers their edges |
 | Talk to the agent | **Copy prompt for agent** (Marks panel) or ⧉ on a mark copies a ready reference |
