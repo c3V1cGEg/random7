@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ViewportPortal, useStore } from "@xyflow/react";
 import { CHANGE_STATUSES, type AnnotationKind, type ChangeStatus, type NodeShape } from "../../server/types.ts";
 import type { CanvasEdge, CanvasNode } from "./elements.tsx";
@@ -15,7 +15,8 @@ export interface SelectionBarProps {
   onShape(shape: NodeShape): void;
   /** Sets the proposal status on the whole selection; null marks it existing. */
   onStatus(status: ChangeStatus | null): void;
-  onAddNext(): void;
+  /** Adds a connected next box: a step, or the kind picked from the + Next menu. */
+  onAddNext(kind?: { shape: NodeShape; label?: string }): void;
   onEdit(): void;
   onEdgeLabel(label: string): void;
   /** Cycles the selected arrows: reversed → both ends → as they were. */
@@ -31,6 +32,66 @@ const SHAPES: Array<[NodeShape, string, string]> = [
   ["terminal", "⬭", "Start / End"],
   ["store", "⛁", "Data store (database, queue table, file)"],
 ];
+/** The kinds of box "+ Next" can add after the selected one. */
+const NEXT_KINDS: Array<{ shape: NodeShape; label?: string; icon: string; name: string }> = [
+  { shape: "action", icon: "▭", name: "Step" },
+  { shape: "decision", icon: "◇", name: "Decision" },
+  { shape: "terminal", label: "Start", icon: "⬭", name: "Start" },
+  { shape: "terminal", label: "End", icon: "⬭", name: "End" },
+  { shape: "store", icon: "⛁", name: "Data store" },
+];
+const NEXT_STATE_KINDS: Array<{ shape: NodeShape; label?: string; icon: string; name: string }> = [
+  { shape: "state", icon: "▢", name: "State" },
+  { shape: "choice", icon: "◇", name: "Choice" },
+  { shape: "final", icon: "◉", name: "End" },
+];
+
+/** "+ Next" with a menu of every kind of box it can add. */
+function NextButton({ diagram, onAddNext }: { diagram?: "flowchart" | "state"; onAddNext: SelectionBarProps["onAddNext"] }) {
+  const [open, setOpen] = useState(false);
+  const kinds = diagram === "state" ? NEXT_STATE_KINDS : NEXT_KINDS;
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (!(e.target as Element | null)?.closest?.(".next-split")) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && (e.stopPropagation(), setOpen(false));
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("keydown", esc, true);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("keydown", esc, true);
+    };
+  }, [open]);
+  return (
+    <span className="next-split">
+      <button className="tool wide" title={`Add connected next ${diagram === "state" ? "state" : "step"} (Tab)`} onClick={() => onAddNext()}>
+        + Next
+      </button>
+      <button className={`tool caret${open ? " on" : ""}`} title="Add a connected next box of another kind" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        ▾
+      </button>
+      {open && (
+        <span className="next-menu" role="menu">
+          {kinds.map((k) => (
+            <button
+              key={k.name}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onAddNext({ shape: k.shape, label: k.label });
+              }}
+            >
+              <span className="icon">{k.icon}</span>
+              {k.name}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
 const STATE_SHAPES: Array<[NodeShape, string, string]> = [
   ["state", "▢", "State"],
   ["choice", "◇", "Choice (guards go on its outgoing transitions)"],
@@ -153,9 +214,7 @@ export function SelectionBar(p: SelectionBarProps) {
             </button>
           )}
           {singleNode.data.shape !== "final" && (
-            <button className="tool wide" title={`Add connected next ${p.diagram === "state" ? "state" : "step"} (Tab)`} onClick={p.onAddNext}>
-              + Next
-            </button>
+            <NextButton diagram={p.diagram} onAddNext={p.onAddNext} />
           )}
         </span>
       )}

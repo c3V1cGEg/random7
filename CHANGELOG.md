@@ -5,6 +5,12 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### "+ Next" picks the kind of box
+
+The floating bar of a selected box has a ▾ next to **+ Next**: a menu of every box it can add,
+connected after the selected one — Step, Decision, Start, End and Data store (in state diagrams:
+State, Choice and End). **+ Next** itself and `Tab` still add a step.
+
 ### Connect mode: the arrow starts where the boxes touched
 
 Bumping a step into another now draws the new arrow between the two sides that touched first, at the

@@ -787,12 +787,12 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
 
   /** Creates a node centred on `center`, optionally connected, then selects it and opens its label editor. */
   const createNode = useCallback(
-    async (shape: NodeShape, center: XY, link?: { id: string; as: "source" | "target" }) => {
+    async (shape: NodeShape, center: XY, link?: { id: string; as: "source" | "target" }, label?: string) => {
       // Start/end dots and choices have no label to type: keys typed meanwhile must not be held for an editor.
       const labelled = shape !== "initial" && shape !== "final" && shape !== "choice";
       typeAhead.current = labelled ? { text: "", then: null } : null;
       const group = crypto.randomUUID();
-      const res = await send([{ op: "add_node", label: DEFAULT_LABEL[shape], shape }], group);
+      const res = await send([{ op: "add_node", label: label ?? DEFAULT_LABEL[shape], shape }], group);
       const id = res?.createdNodeIds?.[0];
       if (!id) {
         typeAhead.current = null;
@@ -835,13 +835,14 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   }, [createNode, pointerOrCenter, selectOnly, showToast]);
 
   const addNext = useCallback(
-    (fromId: string, linkId = fromId) => {
+    (fromId: string, linkId = fromId, kind?: { shape: NodeShape; label?: string }) => {
       const s = stateRef.current;
       if (s?.nodes.find((n) => n.id === fromId)?.shape === "final") return showToast("Nothing leads out of the end");
       const from = rf.getNode(fromId);
       if (!s || !from) return;
       const r = nodeRect(from);
-      const size = DEFAULT_SIZE.action;
+      const shape = kind?.shape ?? shapeFor("step")!;
+      const size = DEFAULT_SIZE[shape];
       const lr = s.direction === "LR";
       let center = lr ? { x: r.x + r.width + 80 + size.width / 2, y: r.y + r.height / 2 } : { x: r.x + r.width / 2, y: r.y + r.height + 70 + size.height / 2 };
       const others = rf.getNodes().map(nodeRect);
@@ -851,7 +852,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         center = lr ? { ...center, y: center.y + size.height + 40 } : { ...center, x: center.x + size.width + 40 };
       }
       setEditingId(null);
-      void createNode(shapeFor("step")!, center, { id: linkId, as: "source" });
+      void createNode(shape, center, { id: linkId, as: "source" }, kind?.label);
     },
     [createNode, rf, shapeFor, showToast],
   );
@@ -1869,7 +1870,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
                       ...selectedEdges.map((e) => ({ op: "update_edge" as const, id: e.id, status })),
                     ])
                   }
-                  onAddNext={() => addNext(selectedNodes[0].id)}
+                  onAddNext={(kind) => addNext(selectedNodes[0].id, selectedNodes[0].id, kind)}
                   onEdit={() => {
                     const id = selectedNodes[0]?.id ?? selectedEdges[0]?.id;
                     if (id && !fixedLabel(id)) setEditingId(id);
