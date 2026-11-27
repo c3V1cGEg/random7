@@ -190,7 +190,10 @@ export class SessionManager {
   private save(store: CanvasStore) {
     if (!this.dir) return;
     const dirty = store.takeDirty();
+    const reset = store.takeReset();
     try {
+      // Cleared: the old history's revision files go, so none is mistaken for a new revision later.
+      if (reset) rmSync(path.join(this.folder(store.name), "revisions"), { recursive: true, force: true });
       mkdirSync(path.join(this.folder(store.name), "revisions"), { recursive: true });
       for (const revision of dirty) writeAtomic(this.revisionFile(store.name, revision), store.storedRevision(revision));
       writeAtomic(path.join(this.folder(store.name), "session.json"), store.storedIndex());
@@ -199,6 +202,7 @@ export class SessionManager {
       store.evictSaved();
     } catch (err) {
       store.markDirty(dirty);
+      if (reset) store.markReset();
       console.error(`Failed to save session ${store.name}:`, err);
     }
   }

@@ -64,7 +64,8 @@ before(async () => {
 
 after(async () => {
   await client?.close();
-  server?.kill();
+  // Wait until the server has saved and exited: removing its folder while it writes there fails at random.
+  if (server && server.exitCode === null) await new Promise((done) => (server!.once("exit", done), server!.kill()));
   rmSync(DATA_DIR, { recursive: true, force: true });
 });
 

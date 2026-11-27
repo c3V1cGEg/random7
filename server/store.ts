@@ -323,6 +323,7 @@ export class CanvasStore {
   private revisions: Revision[] = [];
   /** Revisions changed since the last save. */
   private dirty = new Set<number>();
+  private wasReset = false;
   /** Reads a revision back from disk (set by the session manager when sessions are saved). */
   private loader?: (revision: number) => StoredRevision | undefined;
   /** Set while an edit on an earlier revision is being applied: the next commit continues from it. */
@@ -858,7 +859,11 @@ export class CanvasStore {
     };
   }
 
-  /** Starts a fresh, empty session of the same diagram type. Annotation numbering restarts at #1. */
+  /**
+   * Starts a fresh, empty session of the same diagram type, as if new: revisions, undo history and
+   * every counter (revision, mark #, node and edge ids) start over. The new session id tells browsers
+   * and agents that the numbers began again.
+   */
   reset(source: ChangeSource): { sessionId: string; revision: number } {
     this.model = emptyModel(this.model.type);
     this.layoutMap = new Map();
@@ -867,14 +872,26 @@ export class CanvasStore {
     this.undoStack = [];
     this.redoStack = [];
     this._sessionId = randomUUID();
-    this.events = [];
-    this._revision++;
-    this.sessionStartRevision = this._revision;
-    const event: ChangeEvent = { revision: this._revision, source, ops: [{ op: "reset_session" }] };
-    this.events.push(event);
-    this.pushRevision(event, this._revision - 1);
+    this._revision = this.sessionStartRevision = 0;
+    const event: ChangeEvent = { revision: 0, source, ops: [{ op: "reset_session" }] };
+    this.events = [event];
+    this.revisions = [{ revision: 0, parent: null, at: this.updatedAt, source, ops: event.ops, count: 1 }];
+    this.dirty.clear();
+    this.wasReset = true;
+    this.syncHead();
     this.emit(event);
-    return { sessionId: this._sessionId, revision: this._revision };
+    return { sessionId: this._sessionId, revision: 0 };
+  }
+
+  markReset() {
+    this.wasReset = true;
+  }
+
+  /** True once after a reset: the saved revision files of the old history can go. */
+  takeReset(): boolean {
+    const was = this.wasReset;
+    this.wasReset = false;
+    return was;
   }
 
   // --- undo / redo -----------------------------------------------------------

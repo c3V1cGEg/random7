@@ -43,7 +43,9 @@ its own diagram, marks (numbering starts at #1 per session), revisions, undo his
 
 - **Browser:** `http://127.0.0.1:4317/` opens `default`; `/s/<name>` opens another. Each session is a
   tab at the top; **+ New session** (or Alt+N) creates one. Right-click a tab to export, import,
-  clear or delete it, or to show it next to the open one.
+  clear or delete it, or to show it next to the open one. **Clear canvas** starts the session over as
+  if new: diagram, marks, revisions and undo history go, and revision, mark and node numbers start
+  again (r0, #1, n1).
 - **Split view:** right-click a tab → **Split right** / **Split left** shows that session beside the
   current one (`/s/<left>?right=<right>`). Each side is a full canvas with its own toolbar, marks and
   undo; clicking a tab replaces the side you worked in last, ✕ next to a side's name closes it, and

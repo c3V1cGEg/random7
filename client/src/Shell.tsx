@@ -82,7 +82,7 @@ export function Shell() {
       location.href = sessionUrl(name);
     },
     clear: (name) => {
-      if (!confirm(`Clear session "${name}"? Its diagram and all marks are discarded and mark numbering restarts at #1.`)) return;
+      if (!confirm(`Clear session "${name}"? Its diagram, marks, revisions and undo history are discarded; revision and mark numbers start again from 0 and #1.`)) return;
       resetSession(name).catch((err) => error((err as Error).message));
     },
     remove: (name) => {

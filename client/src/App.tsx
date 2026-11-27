@@ -387,6 +387,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       // Never on an empty canvas: React Flow would hold the fit back and zoom onto the first node the user adds.
       const empty = next.type === "sequence" ? !next.sequence.participants.length : !next.nodes.length;
       if (!empty && (!prev || switched || prev.sessionId !== next.sessionId || (next.type === "sequence" && prev.type !== next.type))) setTimeout(() => fit(), 80);
+      // Cleared (or opened empty): back to 100% zoom, so the first new step is not drawn tiny at the old zoom.
+      else if (empty && prev && prev.sessionId !== next.sessionId) rf.setViewport({ x: 0, y: 0, zoom: 1 });
       revisionWaiters.current.splice(0).forEach((fn) => fn());
 
       // The state being edited got a new value (id) from elsewhere: keep editing it, with what was typed so far.
@@ -418,7 +420,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       else if (event?.ops.some((op) => op.op === "replace_diagram")) setTimeout(() => fit(), 80);
       else if (next.type !== "sequence" && event?.source === "agent" && event.ops.some(structural)) scheduleTidy();
     },
-    [autoLayout, fit, flashTouched, scheduleTidy, shareLayout, sizeOf],
+    [autoLayout, fit, flashTouched, rf, scheduleTidy, shareLayout, sizeOf],
   );
 
   /** Positions moved in another browser (or tab) on the same session. */

@@ -138,3 +138,31 @@ test("sessions are saved as a folder of revisions; old single-file sessions stil
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("clearing a session starts its revisions, undo and counters over, also on disk", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "canvas-reset-"));
+  try {
+    let sessions = new SessionManager(dir);
+    const s = sessions.get("default");
+    for (let i = 0; i < 5; i++) s.applyPatch(s.revision, [{ op: "add_node", label: `Step ${i}` }], "user");
+    sessions.flush();
+    assert.equal(readdirSync(path.join(dir, "default", "revisions")).length, 6);
+    const oldId = s.sessionId;
+    s.reset("user");
+    assert.equal(s.revision, 0);
+    assert.notEqual(s.sessionId, oldId);
+    assert.deepEqual(s.revisionList().revisions.map((r) => r.revision), [0]);
+    assert.deepEqual(s.history(), { undo: [], redo: [] });
+    const next = s.applyPatch(0, [{ op: "add_node", label: "Fresh" }], "user");
+    assert.equal(next.revision, 1);
+    assert.deepEqual(next.createdNodeIds, ["n1"], "node ids start over");
+    sessions.flush();
+    assert.deepEqual(readdirSync(path.join(dir, "default", "revisions")).sort(), ["0.json", "1.json"]);
+    sessions = new SessionManager(dir);
+    const again = sessions.get("default");
+    assert.equal(again.revision, 1);
+    assert.deepEqual(again.revisionList().revisions.map((r) => r.revision), [1, 0]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

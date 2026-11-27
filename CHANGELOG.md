@@ -5,6 +5,14 @@ Newest first. Changes you can see in the editor come with a screenshot; the imag
 
 ## 2026-11-27
 
+### Clear canvas starts over completely
+
+**Clear canvas** used to empty the diagram but keep the revision list growing (a default canvas
+could show 210 revisions after a clear). Now it starts the session over as if new: the revisions,
+undo history and their saved files go, and revision, mark and node numbers start again at r0, #1
+and n1. The view goes back to 100% zoom, so the first new step isn't drawn tiny at the old zoom.
+Open tabs and agents notice the new start (the session gets a new id) and reload.
+
 ### "+ Next" picks the kind of box
 
 The floating bar of a selected box has a ▾ next to **+ Next**: a menu of every box it can add,
