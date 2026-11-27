@@ -11,8 +11,9 @@ Alt-click (Option-click on a Mac) an arrow, or select it and press `R` or click 
 bar. Each one goes one step:
 reversed → arrowheads at both ends → back as it was. Two-way arrows are Mermaid `<-->`
 (`app e8@<--> cache`), which agents can now read and write too (`both` on `add_edge` and
-`update_edge`). State diagrams only reverse, since a transition goes one way. Reversing an arrow
-drops end points you placed by hand.
+`update_edge`). State diagrams only reverse, since a transition goes one way. Changing the direction
+never redraws the arrow: its ends swap attachment points, so a straight arrow stays straight instead
+of turning into a loop, and undo restores the ends together with the direction.
 
 **Connect mode** (`C`, or **⤳ Connect** in the toolbar) connects steps without aiming for a handle.
 Drag a step and bump it into another: the target is outlined and the arrow is drawn at once, from the

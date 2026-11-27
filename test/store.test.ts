@@ -339,6 +339,20 @@ test("two-way edges: <--> parses, round-trips, is set and cleared by update_edge
   assert.match(s.snapshot().diagram, new RegExp(`n4 ${added.createdEdgeIds![0]}@<--> n5`));
 });
 
+test("layout joined to the latest undo step undoes and redoes with it (a reversed arrow keeps its line)", () => {
+  const s = demo();
+  s.applyPatch(1, [{ op: "update_edge", id: "e1", from: "n2", to: "n1" }], "user");
+  s.setLayout({}, undefined, { e1: { from: { side: "top", t: 0.5 }, to: { side: "bottom", t: 0.5 } } }, undefined, undefined, true);
+  assert.deepEqual(s.browserState().anchors.e1, { from: { side: "top", t: 0.5 }, to: { side: "bottom", t: 0.5 } });
+  const steps = s.undo().steps;
+  assert.equal(steps.length, 1, "one step");
+  assert.match(s.snapshot().diagram, /n1 e1@--> n2/);
+  assert.equal(s.browserState().anchors.e1, undefined, "ends back to automatic");
+  s.redo();
+  assert.match(s.snapshot().diagram, /n2 e1@--> n1/);
+  assert.deepEqual(s.browserState().anchors.e1, { from: { side: "top", t: 0.5 }, to: { side: "bottom", t: 0.5 } });
+});
+
 test("state diagrams have no two-way transitions", () => {
   const s = new CanvasStore();
   s.replaceDiagram(0, "stateDiagram-v2\n [*] --> Draft\n Draft --> Paid", "clear", "agent");

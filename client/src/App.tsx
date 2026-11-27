@@ -19,7 +19,7 @@ import {
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import { DIAGRAM_TYPES, awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type DiagramType, type EdgeEnds, type NodeShape } from "../../server/types.ts";
+import { DIAGRAM_TYPES, awaitingAgent, type Anchor, type Annotation, type AnnotationKind, type ChangeOp, type ChangeStatus, type DiagramType, type EdgeEnds, type EdgeEndsPatch, type NodeShape } from "../../server/types.ts";
 import { resolveAnchors } from "./anchors.ts";
 import {
   ConflictError,
@@ -187,6 +187,8 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
   const bump = useRef<{ over: string | null; queue: Promise<unknown>; edge: string | null; bumped: boolean }>({ over: null, queue: Promise.resolve(), edge: null, bumped: false });
   /** Edges this browser just reversed, as they were then: the next click makes them two-way. */
   const reversedEdges = useRef(new Map<string, string>());
+  /** Ends placed by hand before an edge was first reversed (null: none), restored when it is back as it was. */
+  const endsBeforeReverse = useRef(new Map<string, EdgeEnds | null>());
   /** Sequence diagrams: keep lane names visible at the left edge while scrolling (remembered per browser). */
   const [freezeLanes, setFreezeLanes] = useState(() => {
     try {
@@ -870,7 +872,9 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
       const s = stateRef.current;
       if (!s || s.type === "sequence") return Promise.resolve(undefined);
       const ops: Operation[] = [];
-      const clearAnchors: Record<string, { from: null; to: null }> = {};
+      // A reversed arrow keeps its line: its ends swap attachment points instead of being placed anew.
+      const keepLine: Record<string, EdgeEndsPatch> = {};
+      const was: Record<string, EdgeEnds | undefined> = {};
       for (const id of ids) {
         const e = s.edges.find((x) => x.id === id);
         if (!e) continue;
@@ -883,16 +887,42 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         ops.push({ op: "update_edge", id, from: e.to, to: e.from, ...(e.both ? { both: false } : {}) });
         if (e.both) reversedEdges.current.delete(id);
         else reversedEdges.current.set(id, `${e.to}>${e.from}`);
-        if (anchors.current[id]) {
-          delete anchors.current[id];
-          clearAnchors[id] = { from: null, to: null };
+        const drawn = rf.getEdge(id)?.data;
+        let ends: EdgeEnds | null;
+        if (e.both && endsBeforeReverse.current.has(id)) {
+          // Back as it was: the ends it had then (automatic ones are automatic again).
+          ends = endsBeforeReverse.current.get(id) ?? null;
+          endsBeforeReverse.current.delete(id);
+        } else {
+          if (!endsBeforeReverse.current.has(id)) endsBeforeReverse.current.set(id, anchors.current[id] ?? null);
+          const at = (a: Anchor | undefined) => (a ? { side: a.side, t: a.t } : undefined);
+          const from = at(drawn?.to ?? anchors.current[id]?.to);
+          const to = at(drawn?.from ?? anchors.current[id]?.from);
+          ends = from || to ? { ...(from ? { from } : {}), ...(to ? { to } : {}) } : null;
         }
+        was[id] = anchors.current[id];
+        if (ends) anchors.current[id] = ends;
+        else delete anchors.current[id];
+        keepLine[id] = { from: ends?.from ?? null, to: ends?.to ?? null };
+        unsentAnchors.current.add(id);
       }
       if (!ops.length) return Promise.resolve(undefined);
-      if (Object.keys(clearAnchors).length) void postLayout({}, clearAnchors).catch(() => undefined);
-      return send(ops);
+      // Sent after the edge turns, so the turned edge is drawn with the swapped ends straight away.
+      const done = () => Object.keys(keepLine).forEach((id) => unsentAnchors.current.delete(id));
+      return send(ops).then(async (res) => {
+        if (res) await postLayout({}, keepLine, undefined, true).catch(() => undefined);
+        else {
+          // Not turned (read-only view, or refused): the ends stay as they were.
+          for (const [id, e] of Object.entries(was)) {
+            if (e) anchors.current[id] = e;
+            else delete anchors.current[id];
+          }
+        }
+        done();
+        return res;
+      });
     },
-    [send],
+    [rf, send],
   );
 
   /** Connect mode: the step under the pointer while one step is dragged, other than the dragged one. */

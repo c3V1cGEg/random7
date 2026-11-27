@@ -370,13 +370,14 @@ export class CanvasStore {
 
   /**
    * `record` names an undo step for this change (a move or resize by the user); without it the change
-   * is not undoable (automatic placement). `fork`: made while previewing an earlier revision.
+   * is not undoable (automatic placement). `join` adds it to the latest undo step instead, so the two
+   * undo together. `fork`: made while previewing an earlier revision.
    */
-  setLayout(positions: Record<string, XY>, origin?: string, anchors: Record<string, EdgeEndsPatch> = {}, record?: string, fork?: Fork): void {
-    this.withFork(fork, () => this.layoutChange(positions, origin, anchors, record), true);
+  setLayout(positions: Record<string, XY>, origin?: string, anchors: Record<string, EdgeEndsPatch> = {}, record?: string, fork?: Fork, join?: boolean): void {
+    this.withFork(fork, () => this.layoutChange(positions, origin, anchors, record, join), true);
   }
 
-  private layoutChange(positions: Record<string, XY>, origin: string | undefined, anchors: Record<string, EdgeEndsPatch>, record?: string) {
+  private layoutChange(positions: Record<string, XY>, origin: string | undefined, anchors: Record<string, EdgeEndsPatch>, record?: string, join?: boolean) {
     const step: LayoutStep = { before: {}, after: {}, anchorsBefore: {}, anchorsAfter: {} };
     const accepted: Record<string, XY> = {};
     for (const [id, p] of Object.entries(positions)) {
@@ -411,6 +412,15 @@ export class CanvasStore {
     if (record && (!same(step.before, step.after) || !same(step.anchorsBefore, step.anchorsAfter))) {
       this.redoStack = [];
       this.pushUndo({ label: record.slice(0, 80), ops: [], count: 0, at: this.updatedAt, layout: step });
+    } else if (join && this.undoStack.length) {
+      const top = this.undoStack.at(-1)!;
+      const into: LayoutStep = top.layout ?? { before: {}, after: {}, anchorsBefore: {}, anchorsAfter: {} };
+      // The step's "before" is what was there before the step's first change.
+      for (const [id, p] of Object.entries(step.before)) if (!(id in into.before)) into.before[id] = p;
+      for (const [id, e] of Object.entries(step.anchorsBefore)) if (!(id in into.anchorsBefore)) into.anchorsBefore[id] = e;
+      Object.assign(into.after, step.after);
+      Object.assign(into.anchorsAfter, step.anchorsAfter);
+      top.layout = into;
     }
     this.syncHead();
     for (const fn of this.layoutListeners) fn(accepted, origin, ends);

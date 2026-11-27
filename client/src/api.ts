@@ -63,8 +63,8 @@ export const resetSession = (name: string) => post(`/api/s/${encodeURIComponent(
  * Shares node positions with other browsers and saves them with the session (never sent to agents).
  * `record` makes it an undo step listed under that name (the user's own moves and resizes).
  */
-export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}, record?: string) =>
-  post(`${base}/layout`, forked({ positions, anchors, client: CLIENT_ID, ...(record ? { record } : {}) }));
+export const postLayout = (positions: Record<string, XY>, anchors: Record<string, EdgeEndsPatch> = {}, record?: string, join?: boolean) =>
+  post(`${base}/layout`, forked({ positions, anchors, client: CLIENT_ID, ...(record ? { record } : {}), ...(join ? { join } : {}) }));
 
 export const createSession = (name: string, type: "flowchart" | "sequence" | "state" = "flowchart") => post<SessionSummary>("/api/sessions", { name, type });
 

@@ -311,6 +311,8 @@ const LayoutSchema = z.object({
   client: z.string().max(64).optional(),
   /** Makes the change one undo step, listed under this name (e.g. "Moved 2 nodes"). */
   record: z.string().max(80).optional(),
+  /** Adds the change to the latest undo step instead (the edit it belongs to, e.g. a reversed arrow keeping its line). */
+  join: z.boolean().optional(),
   fork: ForkSchema,
 });
 
@@ -322,8 +324,8 @@ app.post(
       res.status(400).json({ error: "invalid_layout", message: parsed.error.message });
       return undefined;
     }
-    const { positions, client, anchors, record, fork } = parsed.data;
-    store.setLayout(positions, client, anchors, record, fork);
+    const { positions, client, anchors, record, fork, join } = parsed.data;
+    store.setLayout(positions, client, anchors, record, fork, join);
     return { ok: true };
   }),
 );
