@@ -809,7 +809,7 @@ button.compare-go { background: var(--accent); color: #fff; border: 0; border-ra
 /* Connect mode (C): bump a dragged step into another to connect them. */
 .canvas-pane.connect-mode .react-flow__node { cursor: copy; }
 .canvas-pane.connect-mode::after {
-  content: "Connect mode — drag a box into another to connect · out and in again to turn the arrow · C or Esc to leave";
+  content: "Connect mode — push a box against another to connect · out and in again to turn the arrow · C or Esc to leave";
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5; pointer-events: none;
   padding: 4px 12px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap;
   box-shadow: 0 2px 8px #0002;

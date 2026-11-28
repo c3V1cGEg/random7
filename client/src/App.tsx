@@ -100,6 +100,9 @@ function compareSummary(d: RevisionDiff): string {
 
 const samePlace = (a: XY | undefined, b: XY | undefined) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
+/** Connect mode: how far (px) a dragged box must reach into another to connect them. */
+const BUMP_DEPTH = 4;
+
 const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a, gap = 20) =>
   a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
 
@@ -993,20 +996,27 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
     };
   }, [rf]);
 
-  /** Connect mode: the step under the pointer while one step is dragged, other than the dragged one. */
+  /**
+   * Connect mode: the step the dragged one runs into, other than itself. The boxes only need to touch
+   * and overlap a little (BUMP_DEPTH); once over a step, it stays the target until the boxes part, so
+   * wobbling at the edge does not bump again. With several, the one overlapped most.
+   */
   const connectHit = useCallback(
-    (event: MouseEvent | TouchEvent, dragged: CanvasNode[]): string | null => {
+    (dragged: CanvasNode[], current: string | null | undefined): string | null => {
       if (!connectMode || dragged.length !== 1 || stateRef.current?.type === "sequence") return null;
-      const pt = "changedTouches" in event ? event.changedTouches[0] : event;
-      if (!pt) return null;
-      const p = rf.screenToFlowPosition({ x: pt.clientX, y: pt.clientY });
-      const hit = rf
-        .getNodes()
-        .filter((n) => n.id !== dragged[0].id && !isDecoration(n.id))
-        .map((n) => ({ id: n.id, r: nodeRect(n) }))
-        .filter(({ r }) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)
-        .at(-1);
-      return hit?.id ?? null;
+      const d = nodeRect(dragged[0]);
+      let best: { id: string; area: number } | null = null;
+      for (const n of rf.getNodes()) {
+        if (n.id === dragged[0].id || isDecoration(n.id)) continue;
+        const r = nodeRect(n);
+        const ox = Math.min(d.x + d.width, r.x + r.width) - Math.max(d.x, r.x);
+        const oy = Math.min(d.y + d.height, r.y + r.height) - Math.max(d.y, r.y);
+        const depth = Math.min(ox, oy);
+        if (depth < (n.id === current ? 0 : BUMP_DEPTH) || depth <= 0) continue;
+        if (n.id === current) return n.id;
+        if (!best || ox * oy > best.area) best = { id: n.id, area: ox * oy };
+      }
+      return best?.id ?? null;
     },
     [connectMode, rf],
   );
@@ -1072,7 +1082,7 @@ function Canvas({ onSessions, onClosePane }: AppProps) {
         if (dragSides.current && sig !== dragSides.current) setEdgeVersion((v) => v + 1);
         dragSides.current = sig;
       }
-      const hit = connectHit(event, dragged);
+      const hit = connectHit(dragged, bump.current.over);
       setConnectTarget(hit);
       // Which sides touch first, for each box the dragged one runs into.
       const c = contact.current;

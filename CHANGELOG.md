@@ -3,6 +3,15 @@
 Newest first. Changes you can see in the editor come with a screenshot; the images live in
 [`docs/changelog/`](docs/changelog/).
 
+## 2026-11-28
+
+### Connect on a light touch
+
+In connect mode, boxes connect as soon as their edges touch and overlap by about 4px. Before, the
+pointer itself had to be inside the other box, so a box held by its middle had to cover half of the
+other one first. A box stays "touching" until the two come fully apart, so wobbling at the edge does
+not turn the arrow again; pull it clear and touch again to turn it.
+
 ## 2026-11-27
 
 ### Shorter prompt for the agent
